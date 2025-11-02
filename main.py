@@ -214,11 +214,13 @@ tree = app_commands.CommandTree(client)
 @app_commands.describe(user="The user to check (optional, defaults to you)")
 async def voicetime(interaction: discord.Interaction, user: discord.Member = None):
     
+    await interaction.response.defer()
+    
     if user is None:
         user = interaction.user
         
     if user.bot:
-        await interaction.response.send_message("Bots don't have voice time!", ephemeral=True)
+        await interaction.followup.send("Bots don't have voice time!", ephemeral=True)
         return
 
     total_seconds_saved = await get_total_time(user.id)
@@ -232,17 +234,19 @@ async def voicetime(interaction: discord.Interaction, user: discord.Member = Non
     
     readable_time = format_duration(total_time)
     
-    await interaction.response.send_message(f"**{user.display_name}** has spent a total of:\n`{readable_time}` in voice channels.")
+    await interaction.followup.send(f"**{user.display_name}** has spent a total of:\n`{readable_time}` in voice channels.")
 
 @tree.command(name="balance", description="Check your total currency balance.")
 @app_commands.describe(user="The user to check (optional, defaults to you)")
 async def balance(interaction: discord.Interaction, user: discord.Member = None):
     
+    await interaction.response.defer()
+
     if user is None:
         user = interaction.user
         
     if user.bot:
-        await interaction.response.send_message("Bots don't have currency!", ephemeral=True)
+        await interaction.followup.send("Bots don't have currency!", ephemeral=True)
         return
 
     user_balance_saved = await get_balance(user.id)
@@ -251,12 +255,11 @@ async def balance(interaction: discord.Interaction, user: discord.Member = None)
     if user.id in active_sessions:
         join_time = active_sessions[user.id]
         current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
-        
         pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
 
     total_balance = user_balance_saved + pending_currency
-    
-    await interaction.response.send_message(f"**{user.display_name}** has **{total_balance} {CURRENCY_NAME}**.")
+
+    await interaction.followup.send(f"**{user.display_name}** has **{total_balance} {CURRENCY_NAME}**.")
 
 
 async def admin_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
