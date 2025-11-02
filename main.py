@@ -3,7 +3,6 @@ from discord import app_commands
 from dotenv import load_dotenv
 import os
 import asyncpg
-import aiosqlite
 import datetime
 import random
 from flask import Flask
