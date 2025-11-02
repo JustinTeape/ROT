@@ -374,12 +374,21 @@ async def leaderboard_currency(interaction: discord.Interaction):
 async def blackjack(interaction: discord.Interaction, amount: int):
     
     user_id = interaction.user.id
-    
+
     if amount <= 0:
         await interaction.response.send_message("You must bet a positive amount.", ephemeral=True)
         return
+
+    saved_balance = await get_balance(user_id)
+
+    pending_currency = 0
+    if user_id in active_sessions:
+        join_time = active_sessions[user_id]
+        current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
+        pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
         
-    current_balance = await get_balance(user_id)
+
+    current_balance = saved_balance + pending_currency
     
     if amount > current_balance:
         await interaction.response.send_message(
@@ -388,7 +397,7 @@ async def blackjack(interaction: discord.Interaction, amount: int):
             ephemeral=True
         )
         return
-        
+
     await interaction.response.defer()
     
     game_view = BlackjackView(interaction, amount)
@@ -399,12 +408,20 @@ async def blackjack(interaction: discord.Interaction, amount: int):
 async def coinflip(interaction: discord.Interaction, amount: int):
     
     user_id = interaction.user.id
-    
+
     if amount <= 0:
         await interaction.response.send_message("You must bet a positive amount.", ephemeral=True)
         return
+
+    saved_balance = await get_balance(user_id)
+
+    pending_currency = 0
+    if user_id in active_sessions:
+        join_time = active_sessions[user_id]
+        current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
+        pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
         
-    current_balance = await get_balance(user_id)
+    current_balance = saved_balance + pending_currency
     
     if amount > current_balance:
         await interaction.response.send_message(
@@ -413,14 +430,14 @@ async def coinflip(interaction: discord.Interaction, amount: int):
             ephemeral=True
         )
         return
-        
+
     await interaction.response.defer()
     
     is_win = random.choice([True, False]) 
     
     if is_win:
+        await update_balance(user_id, amount) 
         new_balance = current_balance + amount
-        await update_balance(user_id, amount)
         
         await interaction.followup.send(
             f"**You won!**\n\n"
@@ -429,8 +446,8 @@ async def coinflip(interaction: discord.Interaction, amount: int):
         )
     
     else:
-        new_balance = current_balance - amount
         await update_balance(user_id, -amount)
+        new_balance = current_balance - amount
         
         await interaction.followup.send(
             f"**You lost!**\n\n"
