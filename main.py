@@ -400,7 +400,7 @@ async def blackjack(interaction: discord.Interaction, amount: int):
 
     await interaction.response.defer()
     
-    game_view = BlackjackView(interaction, amount)
+    game_view = BlackjackView(interaction, amount, current_balance)
     await game_view.start_game()
 
 @tree.command(name="pay", description="Give currency to another user.")
@@ -510,14 +510,14 @@ async def coinflip(interaction: discord.Interaction, amount: int):
         )
 
 class BlackjackView(discord.ui.View):
-    def __init__(self, interaction: discord.Interaction, bet_amount: int):
+    def __init__(self, interaction: discord.Interaction, bet_amount: int, start_balance: int):
         super().__init__(timeout=180.0)
         self.interaction = interaction
         self.player = interaction.user
         self.bet_amount = bet_amount
+        self.current_balance = start_balance
         self.game_over = False
 
-        # Game state
         self.deck = create_deck()
         self.player_hand = [self.deck.pop(), self.deck.pop()]
         self.dealer_hand = [self.deck.pop(), self.deck.pop()]
@@ -577,32 +577,25 @@ class BlackjackView(discord.ui.View):
         """Handles the end of the game, updates balance, and edits message."""
         await self.disable_buttons()
         
-        saved_balance = await get_balance(self.player.id)
-        
-        pending_currency = 0
-        if self.player.id in active_sessions:
-            join_time = active_sessions[self.player.id]
-            current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
-            pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
-            
-        current_balance = saved_balance + pending_currency
-        
         status_message = ""
-        final_game_color = discord.Color.gold()
+        final_game_color = discord.Color.gold() # Default to yellow for a push
+        
         if result == "win":
             await update_balance(self.player.id, self.bet_amount)
-            new_balance = current_balance + self.bet_amount
+            # Use the balance we stored in __init__
+            new_balance = self.current_balance + self.bet_amount 
             status_message = f"You won {self.bet_amount} {CURRENCY_NAME}!\nNew Balance: **{new_balance}**"
             final_game_color = discord.Color.green()
             
         elif result == "lose":
             await update_balance(self.player.id, -self.bet_amount)
-            new_balance = current_balance - self.bet_amount
+            # Use the balance we stored in __init__
+            new_balance = self.current_balance - self.bet_amount 
             status_message = f"You lost {self.bet_amount} {CURRENCY_NAME}!\nNew Balance: **{new_balance}**"
             final_game_color = discord.Color.red()
             
         elif result == "push":
-            new_balance = current_balance
+            new_balance = self.current_balance # Balance is unchanged
             status_message = f"It's a push! Bet returned.\nBalance: **{new_balance}**"
             
         final_embed = self.create_game_embed(message, status_message, reveal_dealer=True, final_color=final_game_color)
@@ -614,7 +607,7 @@ class BlackjackView(discord.ui.View):
         except Exception as e:
             print(f"Error editing message: {e}")
 
-        self.stop()
+        self.stop() # Stop the view from listening
         
     async def on_timeout(self):
         if not self.game_over:
