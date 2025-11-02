@@ -2,6 +2,7 @@ import discord
 from discord import app_commands
 from dotenv import load_dotenv
 import os
+import asyncpg
 import aiosqlite  # For database
 import datetime   # For time tracking
 import random  # Add this with your other imports
@@ -19,82 +20,93 @@ SECONDS_PER_CURRENCY = 60 # 60 seconds = 1 Coin
 # This dictionary still stores active sessions: {user_id: join_time}
 active_sessions = {}
 
-# --- 3. DATABASE HELPER FUNCTIONS (MODIFIED) ---
+# --- 3. DATABASE HELPER FUNCTIONS (MODIFIED FOR POSTGRESQL) ---
 
-async def initialize_database():
-    """Creates the database and table with both time and currency."""
-    async with aiosqlite.connect(DB_NAME) as db:
-        # Table now has both total_seconds and balance
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS user_stats (
-                user_id INTEGER PRIMARY KEY,
-                total_seconds INTEGER DEFAULT 0,
-                balance INTEGER DEFAULT 0
-            )
-        """)
-        await db.commit()
+
+# This will hold our connection pool
+db_pool = None
+
+async def init_database_pool():
+    """Initializes the PostgreSQL connection pool and creates the table."""
+    global db_pool
+    
+    # Render provides the database URL in an environment variable
+    database_url = os.getenv('DATABASE_URL')
+    if not database_url:
+        print("DATABASE_URL not set. Bot cannot connect to database.")
+        return
+        
+    try:
+        db_pool = await asyncpg.create_pool(database_url)
+        
+        # Create the table if it doesn't exist
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_stats (
+                    user_id BIGINT PRIMARY KEY,
+                    total_seconds BIGINT DEFAULT 0,
+                    balance BIGINT DEFAULT 0
+                )
+            """)
+        print("Database pool initialized and table checked.")
+        
+    except Exception as e:
+        print(f"Error initializing database pool: {e}")
+
 
 async def record_vc_session(user_id: int, seconds_to_add: int, currency_to_add: int):
     """Updates both time and currency in the database after a VC session."""
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("""
+    if not db_pool: return
+    async with db_pool.acquire() as conn:
+        # PostgreSQL uses a different "UPSERT" syntax
+        await conn.execute("""
             INSERT INTO user_stats (user_id, total_seconds, balance)
-            VALUES (?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                total_seconds = total_seconds + excluded.total_seconds,
-                balance = balance + excluded.balance
-        """, (user_id, seconds_to_add, currency_to_add))
-        await db.commit()
+            VALUES ($1, $2, $3)
+            ON CONFLICT (user_id) DO UPDATE SET
+                total_seconds = user_stats.total_seconds + $2,
+                balance = user_stats.balance + $3
+        """, user_id, seconds_to_add, currency_to_add)
 
 async def update_balance(user_id: int, amount: int):
     """Simple function to give/take currency (for admin commands)."""
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("""
+    if not db_pool: return
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
             INSERT INTO user_stats (user_id, balance)
-            VALUES (?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                balance = balance + excluded.balance
-        """, (user_id, amount))
-        await db.commit()
+            VALUES ($1, $2)
+            ON CONFLICT (user_id) DO UPDATE SET
+                balance = user_stats.balance + $2
+        """, user_id, amount)
 
 async def get_balance(user_id: int) -> int:
     """Gets the total balance for a user."""
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT balance FROM user_stats WHERE user_id = ?", (user_id,)) as cursor:
-            row = await cursor.fetchone()
-            return row[0] if row else 0
+    if not db_pool: return 0
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT balance FROM user_stats WHERE user_id = $1", user_id)
+        return row['balance'] if row else 0
 
 async def get_total_time(user_id: int) -> int:
     """Gets the total voice time in seconds for a user."""
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT total_seconds FROM user_stats WHERE user_id = ?", (user_id,)) as cursor:
-            row = await cursor.fetchone()
-            return row[0] if row else 0
-
-# --- REVISED DATABASE HELPERS ---
-# Replace your old get_time_leaderboard and get_currency_leaderboard
-# with these two new versions.
+    if not db_pool: return 0
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT total_seconds FROM user_stats WHERE user_id = $1", user_id)
+        return row['total_seconds'] if row else 0
 
 async def get_all_time_data():
     """Gets all users and their total_seconds from the database."""
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute(
-            "SELECT user_id, total_seconds FROM user_stats"
-        ) as cursor:
-            # Return as a dictionary for easy merging
-            rows = await cursor.fetchall()
-            return {user_id: seconds for user_id, seconds in rows}
+    if not db_pool: return {}
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("SELECT user_id, total_seconds FROM user_stats")
+        return {row['user_id']: row['total_seconds'] for row in rows}
 
 async def get_all_currency_data():
     """Gets all users and their balance from the database."""
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute(
-            "SELECT user_id, balance FROM user_stats"
-        ) as cursor:
-            # Return as a dictionary for easy merging
-            rows = await cursor.fetchall()
-            return {user_id: balance for user_id, balance in rows}
-# --- RE-ADDED: Helper function to format seconds ---
+    if not db_pool: return {}
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("SELECT user_id, balance FROM user_stats")
+        return {row['user_id']: row['balance'] for row in rows}
+
+# --- END OF DATABASE FUNCTIONS ---
 def format_duration(total_seconds: int) -> str:
     """Converts seconds into a readable string."""
     if total_seconds == 0:
@@ -167,11 +179,14 @@ class aclient(discord.Client):
 
     async def on_ready(self):
         await self.wait_until_ready()
+        
+        # --- ADDED: Initialize the database pool FIRST ---
+        await init_database_pool()
+        
         if not self.synced:
             await tree.sync()
             self.synced = True
         
-        await initialize_database() # Initialize the new 'user_stats' table
         print(f"We have logged in as {self.user}.")
 
         # Scan VCs on startup
