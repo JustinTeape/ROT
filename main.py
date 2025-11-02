@@ -403,6 +403,60 @@ async def blackjack(interaction: discord.Interaction, amount: int):
     game_view = BlackjackView(interaction, amount)
     await game_view.start_game()
 
+@tree.command(name="pay", description="Give currency to another user.")
+@app_commands.describe(user="The user you want to give currency to", amount="The amount to give")
+async def donate(interaction: discord.Interaction, user: discord.Member, amount: int):
+    
+    donator_id = interaction.user.id
+    recipient_id = user.id
+    
+
+    if amount <= 0:
+        await interaction.response.send_message("You must donate a positive amount.", ephemeral=True)
+        return
+        
+    if donator_id == recipient_id:
+        await interaction.response.send_message("You cannot donate to yourself.", ephemeral=True)
+        return
+        
+    if user.bot:
+        await interaction.response.send_message(f"You cannot donate to a bot.", ephemeral=True)
+        return
+
+    saved_balance = await get_balance(donator_id)
+    
+    pending_currency = 0
+    if donator_id in active_sessions:
+        join_time = active_sessions[donator_id]
+        current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
+        pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
+        
+    donator_balance = saved_balance + pending_currency
+    
+    if amount > donator_balance:
+        await interaction.response.send_message(
+            f"You don't have enough {CURRENCY_NAME} to donate that much.\n"
+            f"Your current balance is: **{donator_balance} {CURRENCY_NAME}**", 
+            ephemeral=True
+        )
+        return
+
+    try:
+        await interaction.response.defer()
+
+        await update_balance(donator_id, -amount)
+        
+        await update_balance(recipient_id, amount)
+        
+        await interaction.followup.send(
+            f"**Transaction Successful!**\n\n"
+            f"**{interaction.user.display_name}** gave **{amount} {CURRENCY_NAME}** to **{user.display_name}**."
+        )
+        
+    except Exception as e:
+        print(f"Error during /donate transaction: {e}")
+        await interaction.followfup.send("An error occurred during the transaction. Please try again.", ephemeral=True)
+
 @tree.command(name="coinflip", description="Gamble your currency on a 50/50 coin flip.")
 @app_commands.describe(amount="The amount of currency you want to bet")
 async def coinflip(interaction: discord.Interaction, amount: int):
@@ -523,24 +577,32 @@ class BlackjackView(discord.ui.View):
         """Handles the end of the game, updates balance, and edits message."""
         await self.disable_buttons()
         
-        new_balance = await get_balance(self.player.id)
+        saved_balance = await get_balance(self.player.id)
+        
+        pending_currency = 0
+        if self.player.id in active_sessions:
+            join_time = active_sessions[self.player.id]
+            current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
+            pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
+            
+        current_balance = saved_balance + pending_currency
+        
         status_message = ""
-        
         final_game_color = discord.Color.gold()
-        
         if result == "win":
             await update_balance(self.player.id, self.bet_amount)
-            new_balance += self.bet_amount
+            new_balance = current_balance + self.bet_amount
             status_message = f"You won {self.bet_amount} {CURRENCY_NAME}!\nNew Balance: **{new_balance}**"
             final_game_color = discord.Color.green()
             
         elif result == "lose":
             await update_balance(self.player.id, -self.bet_amount)
-            new_balance -= self.bet_amount
+            new_balance = current_balance - self.bet_amount
             status_message = f"You lost {self.bet_amount} {CURRENCY_NAME}!\nNew Balance: **{new_balance}**"
             final_game_color = discord.Color.red()
             
         elif result == "push":
+            new_balance = current_balance
             status_message = f"It's a push! Bet returned.\nBalance: **{new_balance}**"
             
         final_embed = self.create_game_embed(message, status_message, reveal_dealer=True, final_color=final_game_color)
