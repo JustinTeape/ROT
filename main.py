@@ -518,7 +518,7 @@ async def roulette(interaction: discord.Interaction, amount: app_commands.Range[
         await msg.edit(embed=embed)
     
     await asyncio.sleep(1)
-    embed.description = f"You bet **{amount} {CURRENCY_NAME}** on **{bet}**...\n\n**No more bets!** 🚫"
+    embed.description = f"You bet **{amount} {CURRENCY_NAME}** on **{bet}**...\n\n"
     await msg.edit(embed=embed)
     await asyncio.sleep(1.5)
 
@@ -561,7 +561,7 @@ async def roulette(interaction: discord.Interaction, amount: app_commands.Range[
         
         embed.color = discord.Color.green()
         embed.add_field(
-            name="You Won!",
+            name="Your results!",
             value=f"You won **{winnings} {CURRENCY_NAME}**.\nYour new balance is **{new_balance} {CURRENCY_NAME}**.",
             inline=False
         )
@@ -571,7 +571,7 @@ async def roulette(interaction: discord.Interaction, amount: app_commands.Range[
         
         embed.color = discord.Color.red()
         embed.add_field(
-            name="You Lost",
+            name="Your results!",
             value=f"You lost **{amount} {CURRENCY_NAME}**.\nYour new balance is **{new_balance} {CURRENCY_NAME}**.",
             inline=False
         )
