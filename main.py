@@ -8,6 +8,7 @@ import random
 from flask import Flask
 from threading import Thread
 from discord import ui
+import asyncio
 
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
@@ -15,6 +16,9 @@ token = os.getenv('DISCORD_TOKEN')
 DB_NAME = "user_data.db"
 CURRENCY_NAME = "GB"
 SECONDS_PER_CURRENCY = 60
+
+REDS = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]
+BLACKS = [2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35]
 
 active_sessions = {}
 
@@ -459,6 +463,120 @@ async def donate(interaction: discord.Interaction, user: discord.Member, amount:
     except Exception as e:
         print(f"Error during /donate transaction: {e}")
         await interaction.followfup.send("An error occurred during the transaction. Please try again.", ephemeral=True)
+
+@tree.command(name="roulette", description="Bet your currency on a game of roulette.")
+@app_commands.describe(
+    amount="The amount of currency you want to bet",
+    bet="Your choice: Red/Black (1:1), Even/Odd (1:1), or Green (35:1)"
+)
+@app_commands.choices(bet=[
+    app_commands.Choice(name="🔴 Red", value="Red"),
+    app_commands.Choice(name="⚫ Black", value="Black"),
+    app_commands.Choice(name="🔵 Even", value="Even"),
+    app_commands.Choice(name="🟣 Odd", value="Odd"),
+    app_commands.Choice(name="🟢 Green (0)", value="Green"),
+])
+async def roulette(interaction: discord.Interaction, amount: app_commands.Range[int, 1], bet: str):
+    
+    user_id = interaction.user.id
+  
+    await interaction.response.defer()
+
+    saved_balance = await get_balance(user_id)
+    pending_currency = 0
+    if user_id in active_sessions:
+        join_time = active_sessions[user_id]
+        current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
+        pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
+        
+    current_balance = saved_balance + pending_currency
+    
+    if amount > current_balance:
+        await interaction.followup.send(
+            f"You don't have enough {CURRENCY_NAME} to make that bet.\n"
+            f"Your current balance is: **{current_balance} {CURRENCY_NAME}**", 
+            ephemeral=True
+        )
+        return
+        
+    embed = discord.Embed(
+        title="Roulette Spin",
+        description=f"You bet **{amount} {CURRENCY_NAME}** on **{bet}**...\n\nSpinning... 🔴",
+        color=discord.Color.gold()
+    )
+
+    msg = await interaction.followup.send(embed=embed)
+    
+    spin_frames = [
+        "⚫", "🔴", "⚫", "🟢", "🔴", "⚫", "🔴", "⚫",
+        "🔴", "⚫", "🔴", "⚫", "🟢", "🔴", "⚫"
+    ]
+    
+    for frame in spin_frames:
+        await asyncio.sleep(0.5)
+        embed.description = f"You bet **{amount} {CURRENCY_NAME}** on **{bet}**...\n\nSpinning... {frame}"
+        await msg.edit(embed=embed)
+    
+    await asyncio.sleep(1)
+    embed.description = f"You bet **{amount} {CURRENCY_NAME}** on **{bet}**...\n\n**No more bets!** 🚫"
+    await msg.edit(embed=embed)
+    await asyncio.sleep(1.5)
+
+    spin_result = random.randint(0, 36)
+    
+    spin_color = "Green"
+    if spin_result in REDS:
+        spin_color = "Red"
+    elif spin_result in BLACKS:
+        spin_color = "Black"
+        
+    spin_parity = "None"
+    if spin_result != 0:
+        spin_parity = "Even" if spin_result % 2 == 0 else "Odd"
+
+    is_win = False
+    payout_multiplier = 0
+
+    if bet == spin_color:
+        is_win = True
+        payout_multiplier = 1
+    elif bet == spin_parity:
+        is_win = True
+        payout_multiplier = 1
+    
+    if bet == "Green" and spin_color == "Green":
+        is_win = True
+        payout_multiplier = 35
+
+    embed.add_field(
+        name="The wheel landed on...",
+        value=f"**{spin_result} {spin_color}**",
+        inline=False
+    )
+
+    if is_win:
+        winnings = amount * payout_multiplier
+        await update_balance(user_id, winnings)
+        new_balance = current_balance + winnings
+        
+        embed.color = discord.Color.green()
+        embed.add_field(
+            name="You Won!",
+            value=f"You won **{winnings} {CURRENCY_NAME}**.\nYour new balance is **{new_balance} {CURRENCY_NAME}**.",
+            inline=False
+        )
+    else:
+        await update_balance(user_id, -amount)
+        new_balance = current_balance - amount
+        
+        embed.color = discord.Color.red()
+        embed.add_field(
+            name="You Lost",
+            value=f"You lost **{amount} {CURRENCY_NAME}**.\nYour new balance is **{new_balance} {CURRENCY_NAME}**.",
+            inline=False
+        )
+        
+    await msg.edit(embed=embed)
 
 @tree.command(name="coinflip", description="Gamble your currency on a 50/50 coin flip.")
 @app_commands.describe(amount="The amount of currency you want to bet")
