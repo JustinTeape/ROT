@@ -800,6 +800,8 @@ async def disable_horserace(interaction: discord.Interaction):
         ephemeral=True
     )
 
+# --- HORSE RACE PUBLIC COMMAND (CLEANED UP) ---
+
 @tree.command(name="bet-horse", description="Place a bet on the next horse race.")
 @app_commands.describe(
     amount="The amount of currency you want to bet",
@@ -812,29 +814,43 @@ async def disable_horserace(interaction: discord.Interaction):
     app_commands.Choice(name="🟨 Yellow", value="Yellow"),
     app_commands.Choice(name="🟪 Purple", value="Purple")
 ])
-
 async def bet_horse(interaction: discord.Interaction, amount: app_commands.Range[int, 1], color: str):
     await interaction.response.defer(ephemeral=True)
     user_id = interaction.user.id
     guild_id = interaction.guild_id
+
+    def get_next_race_timestamp(now_time):
+        if now_time.minute < 30:
+            next_race_dt = now_time.replace(minute=30, second=0, microsecond=0)
+        else:
+            next_race_dt = (now_time + datetime.timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+        
+        timestamp = int(next_race_dt.timestamp())
+        return f"<t:{timestamp}:R>"
 
     config = await get_guild_race_config(guild_id)
     if not config:
         await interaction.followup.send("Horse racing is not set up in this server. An admin must use `/setup-horserace`.")
         return
 
-    now = datetime.datetime.now()
+    now = datetime.datetime.now(datetime.timezone.utc)
     if now.minute in RACE_LOCKOUT_MINUTES:
-        next_race_time = ":00" if now.minute >= 30 else ":30"
-        await interaction.followup.send(f"Sorry, bets are **LOCKED** for the race at {now.hour}{next_race_time}. Please bet on the *next* one.")
+        relative_time_str = get_next_race_timestamp(now)
+        
+        await interaction.followup.send(
+            f"Sorry, bets are **LOCKED** for the current race.\n"
+            f"You can bet on the next race, which starts {relative_time_str}."
+        )
         return
 
     saved_balance = await get_balance(user_id)
     pending_currency = 0
     if user_id in active_sessions:
         join_time = active_sessions[user_id]
-        current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
-        pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
+        if join_time.tzinfo is None:
+             join_time = join_time.replace(tzinfo=datetime.timezone.utc)
+        current_session_seconds = (now - join_time).total_seconds()
+        pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
     
     current_balance = saved_balance + pending_currency
     
@@ -846,13 +862,14 @@ async def bet_horse(interaction: discord.Interaction, amount: app_commands.Range
         return
 
     await place_bet(user_id, guild_id, amount, color)
+
+    relative_time_str = get_next_race_timestamp(now) 
     
-    next_race_minute = "00" if now.minute >= 30 else "30"
-    next_race_hour = now.hour + 1 if now.minute >= 30 else now.hour
     await interaction.followup.send(
         f"Your bet has been updated!\n"
-        f"You have **{amount} {CURRENCY_NAME}** on the **{HORSE_DEFINITIONS[color]} {color} Horse** for the race at {next_race_hour}:{next_race_minute}."
+        f"You have **{amount} {CURRENCY_NAME}** on the **{HORSE_DEFINITIONS[color]} {color} Horse** for the race {relative_time_str}."
     )
+
 
 @tree.command(name="coinflip", description="Gamble your currency on a 50/50 coin flip.")
 @app_commands.describe(amount="The amount of currency you want to bet")
