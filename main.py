@@ -250,28 +250,39 @@ async def start_race_loop():
     
     if db_pool:
         try:
-            async with db_pool.acquire() as conn:
-                await conn.fetchval("SELECT 1")
-            print("Database keep-alive ping successful.")
+
+            await asyncio.wait_for(
+                db_pool.fetchval("SELECT 1"), 
+                timeout=10.0
+            )
+
+        except asyncio.TimeoutError:
+            print("Database keep-alive ping timed out (DB was asleep).")
         except Exception as e:
             print(f"Database keep-alive ping failed: {e}")
-
+ 
     now = datetime.datetime.now(datetime.timezone.utc)
     
     if now.minute == 0 or now.minute == 30:
         print(f"Race time! ({now.hour}:{now.minute:02d}) Running global races.")
-        await run_global_races()
+        
+        asyncio.create_task(run_global_races())
 
 async def run_global_races():
     """Fetches all configured guilds and starts a race in each one."""
-    configs = await get_all_race_configs()
     
-    tasks_to_run = []
-    for (guild_id, channel_id) in configs:
-        tasks_to_run.append(run_race_in_channel(guild_id, channel_id))
-    
-    await asyncio.gather(*tasks_to_run)
-    print("All races finished.")
+    try:
+        configs = await get_all_race_configs()
+        
+        tasks_to_run = []
+        for (guild_id, channel_id) in configs:
+            tasks_to_run.append(run_race_in_channel(guild_id, channel_id))
+        
+
+        await asyncio.gather(*tasks_to_run)
+        print("All races finished.")
+    except Exception as e:
+        print(f"CRITICAL ERROR in run_global_races: {e}")
 
 async def run_race_in_channel(guild_id: int, channel_id: int):
     """Runs a single animated race in a specific channel."""
@@ -722,7 +733,7 @@ async def roulette(interaction: discord.Interaction, amount: app_commands.Range[
         await msg.edit(embed=embed) 
     
     await asyncio.sleep(1)
-    embed.description = f"You bet **{amount} {CURRENCY_NAME}** on **{bet}**...\n\n**No more bets!** 🚫"
+    embed.description = f"You bet **{amount} {CURRENCY_NAME}** on **{bet}**...\n\n**"
     await msg.edit(embed=embed)
     await asyncio.sleep(1.5) 
 
