@@ -586,23 +586,22 @@ async def blackjack(interaction: discord.Interaction, amount: int):
     
     user_id = interaction.user.id
     
+
+    
+
+
     if amount <= 0:
         await interaction.followup.send("You must bet a positive amount.", ephemeral=True)
         return
         
     # --- FIX 2: Timezone-aware math ---
-    now = datetime.datetime.now(datetime.timezone.utc)
-    saved_balance = await get_balance(user_id)
     pending_currency = 0
     if user_id in active_sessions:
         join_time = active_sessions[user_id]
-        if join_time.tzinfo is None:
-             join_time = join_time.replace(tzinfo=datetime.timezone.utc)
-        current_session_seconds = (now - join_time).total_seconds()
-        if current_session_seconds > 0:
-            pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
-            
-    current_balance = saved_balance + pending_currency
+        current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
+        pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
+            # band aid
+    current_balance = user_balance_saved + pending_currency
     
     if amount > current_balance:
         await interaction.followup.send(
