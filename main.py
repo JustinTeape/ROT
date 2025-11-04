@@ -247,7 +247,7 @@ def format_dealer_hand_hidden(hand):
 @tasks.loop(minutes=1.0)
 async def start_race_loop():
     """Checks every minute if it's time to start a race."""
-    now = datetime.datetime.now()
+    now = datetime.datetime.now(datetime.timezone.utc)
 
     if now.minute == 0 or now.minute == 30:
         print(f"Race time! ({now.hour}:{now.minute:02d}) Running global races.")
@@ -373,7 +373,7 @@ class aclient(discord.Client):
         print(f"We have logged in as {self.user}.")
 
         print("Checking for users in VC on startup...")
-        now = datetime.datetime.now()
+        now = datetime.datetime.now(datetime.timezone.utc)
         for guild in self.guilds:
             for vc in guild.voice_channels:
                 for member in vc.members:
@@ -387,11 +387,15 @@ class aclient(discord.Client):
         if member.bot:
             return
 
-        now = datetime.datetime.now()
+        now = datetime.datetime.now(datetime.timezone.utc)
 
         if before.channel is not None and before.channel != after.channel:
             if member.id in active_sessions:
                 join_time = active_sessions.pop(member.id)
+
+                if join_time.tzinfo is None:
+                    join_time = join_time.replace(tzinfo=datetime.timezone.utc)
+
                 duration_seconds = int((now - join_time).total_seconds())
                 
                 currency_earned = int(duration_seconds / SECONDS_PER_CURRENCY)
@@ -573,69 +577,69 @@ async def leaderboard_currency(interaction: discord.Interaction):
 @tree.command(name="blackjack", description="Play a game of Blackjack for currency.")
 @app_commands.describe(amount="The amount of currency you want to bet")
 async def blackjack(interaction: discord.Interaction, amount: int):
-    
+    await interaction.response.defer()
     user_id = interaction.user.id
-
+    
     if amount <= 0:
-        await interaction.response.send_message("You must bet a positive amount.", ephemeral=True)
+        await interaction.followup.send("You must bet a positive amount.", ephemeral=True)
         return
-
+        
     saved_balance = await get_balance(user_id)
-
     pending_currency = 0
+    now = datetime.datetime.now(datetime.timezone.utc)
+    
     if user_id in active_sessions:
         join_time = active_sessions[user_id]
-        current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
+        if join_time.tzinfo is None:
+             join_time = join_time.replace(tzinfo=datetime.timezone.utc)
+        current_session_seconds = (now - join_time).total_seconds()
         pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
         
-
     current_balance = saved_balance + pending_currency
     
     if amount > current_balance:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"You don't have enough {CURRENCY_NAME} to make that bet.\n"
             f"Your current balance is: **{current_balance} {CURRENCY_NAME}**", 
             ephemeral=True
         )
         return
-
-    await interaction.response.defer()
-    
+        
     game_view = BlackjackView(interaction, amount, current_balance)
     await game_view.start_game()
 
 @tree.command(name="pay", description="Give currency to another user.")
 @app_commands.describe(user="The user you want to give currency to", amount="The amount to give")
 async def donate(interaction: discord.Interaction, user: discord.Member, amount: int):
-    
+    await interaction.response.defer()
     donator_id = interaction.user.id
     recipient_id = user.id
     
-
     if amount <= 0:
-        await interaction.response.send_message("You must donate a positive amount.", ephemeral=True)
+        await interaction.followup.send("You must donate a positive amount.", ephemeral=True)
         return
-        
     if donator_id == recipient_id:
-        await interaction.response.send_message("You cannot donate to yourself.", ephemeral=True)
+        await interaction.followup.send("You cannot donate to yourself.", ephemeral=True)
+        return
+    if user.bot:
+        await interaction.followup.send(f"You cannot donate to a bot.", ephemeral=True)
         return
         
-    if user.bot:
-        await interaction.response.send_message(f"You cannot donate to a bot.", ephemeral=True)
-        return
-
     saved_balance = await get_balance(donator_id)
-    
     pending_currency = 0
+    now = datetime.datetime.now(datetime.timezone.utc)
+    
     if donator_id in active_sessions:
         join_time = active_sessions[donator_id]
-        current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
+        if join_time.tzinfo is None:
+             join_time = join_time.replace(tzinfo=datetime.timezone.utc)
+        current_session_seconds = (now - join_time).total_seconds()
         pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
         
     donator_balance = saved_balance + pending_currency
     
     if amount > donator_balance:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"You don't have enough {CURRENCY_NAME} to donate that much.\n"
             f"Your current balance is: **{donator_balance} {CURRENCY_NAME}**", 
             ephemeral=True
@@ -643,20 +647,15 @@ async def donate(interaction: discord.Interaction, user: discord.Member, amount:
         return
 
     try:
-        await interaction.response.defer()
-
         await update_balance(donator_id, -amount)
-        
         await update_balance(recipient_id, amount)
-        
         await interaction.followup.send(
-            f"**Transaction Successful!**\n\n"
+            f"✅ **Transaction Successful!**\n\n"
             f"**{interaction.user.display_name}** gave **{amount} {CURRENCY_NAME}** to **{user.display_name}**."
         )
-        
     except Exception as e:
         print(f"Error during /donate transaction: {e}")
-        await interaction.followfup.send("An error occurred during the transaction. Please try again.", ephemeral=True)
+        await interaction.followup.send("An error occurred during the transaction. Please try again.", ephemeral=True)
 
 @tree.command(name="roulette", description="Bet your currency on a game of roulette.")
 @app_commands.describe(
@@ -672,15 +671,18 @@ async def donate(interaction: discord.Interaction, user: discord.Member, amount:
 ])
 async def roulette(interaction: discord.Interaction, amount: app_commands.Range[int, 1], bet: str):
     
-    user_id = interaction.user.id
-  
     await interaction.response.defer()
+    user_id = interaction.user.id
 
     saved_balance = await get_balance(user_id)
     pending_currency = 0
+    now = datetime.datetime.now(datetime.timezone.utc)
+    
     if user_id in active_sessions:
         join_time = active_sessions[user_id]
-        current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
+        if join_time.tzinfo is None:
+             join_time = join_time.replace(tzinfo=datetime.timezone.utc)
+        current_session_seconds = (now - join_time).total_seconds()
         pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
         
     current_balance = saved_balance + pending_currency
@@ -698,7 +700,6 @@ async def roulette(interaction: discord.Interaction, amount: app_commands.Range[
         description=f"You bet **{amount} {CURRENCY_NAME}** on **{bet}**...\n\nSpinning... 🔴",
         color=discord.Color.gold()
     )
-
     msg = await interaction.followup.send(embed=embed)
     
     spin_frames = [
@@ -707,14 +708,14 @@ async def roulette(interaction: discord.Interaction, amount: app_commands.Range[
     ]
     
     for frame in spin_frames:
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.5) 
         embed.description = f"You bet **{amount} {CURRENCY_NAME}** on **{bet}**...\n\nSpinning... {frame}"
-        await msg.edit(embed=embed)
+        await msg.edit(embed=embed) 
     
     await asyncio.sleep(1)
-    embed.description = f"You bet **{amount} {CURRENCY_NAME}** on **{bet}**...\n\n"
+    embed.description = f"You bet **{amount} {CURRENCY_NAME}** on **{bet}**...\n\n**No more bets!** 🚫"
     await msg.edit(embed=embed)
-    await asyncio.sleep(1.5)
+    await asyncio.sleep(1.5) 
 
     spin_result = random.randint(0, 36)
     
@@ -741,7 +742,7 @@ async def roulette(interaction: discord.Interaction, amount: app_commands.Range[
     if bet == "Green" and spin_color == "Green":
         is_win = True
         payout_multiplier = 35
-
+    
     embed.add_field(
         name="The wheel landed on...",
         value=f"**{spin_result} {spin_color}**",
@@ -755,7 +756,7 @@ async def roulette(interaction: discord.Interaction, amount: app_commands.Range[
         
         embed.color = discord.Color.green()
         embed.add_field(
-            name="Your results!",
+            name="🎉 You Won! 🎉",
             value=f"You won **{winnings} {CURRENCY_NAME}**.\nYour new balance is **{new_balance} {CURRENCY_NAME}**.",
             inline=False
         )
@@ -765,7 +766,7 @@ async def roulette(interaction: discord.Interaction, amount: app_commands.Range[
         
         embed.color = discord.Color.red()
         embed.add_field(
-            name="Your results!",
+            name="💀 You Lost 💀",
             value=f"You lost **{amount} {CURRENCY_NAME}**.\nYour new balance is **{new_balance} {CURRENCY_NAME}**.",
             inline=False
         )
@@ -846,62 +847,66 @@ async def bet_horse(interaction: discord.Interaction, amount: app_commands.Range
         return
 
     await place_bet(user_id, guild_id, amount, color)
+
+    if now.minute < 30:
+        next_race_time = now.replace(minute=30, second=0, microsecond=0)
+    else:
+        next_race_time = (now + datetime.timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+
+    timestamp = int(next_race_time.timestamp())
+    relative_time_str = f"<t:{timestamp}:R>"
     
-    next_race_minute = "00" if now.minute >= 30 else "30"
-    next_race_hour = now.hour + 1 if now.minute >= 30 else now.hour
     await interaction.followup.send(
         f"Your bet has been updated!\n"
-        f"You have **{amount} {CURRENCY_NAME}** on the **{HORSE_DEFINITIONS[color]} {color} Horse** for the race at {next_race_hour}:{next_race_minute}."
+        f"You have **{amount} {CURRENCY_NAME}** on the **{HORSE_DEFINITIONS[color]} {color} Horse** for the race {relative_time_str}."
     )
 
 @tree.command(name="coinflip", description="Gamble your currency on a 50/50 coin flip.")
 @app_commands.describe(amount="The amount of currency you want to bet")
 async def coinflip(interaction: discord.Interaction, amount: int):
-    
+    await interaction.response.defer()
     user_id = interaction.user.id
-
+    
     if amount <= 0:
-        await interaction.response.send_message("You must bet a positive amount.", ephemeral=True)
+        await interaction.followup.send("You must bet a positive amount.", ephemeral=True)
         return
-
+        
     saved_balance = await get_balance(user_id)
-
     pending_currency = 0
+    now = datetime.datetime.now(datetime.timezone.utc)
+    
     if user_id in active_sessions:
         join_time = active_sessions[user_id]
-        current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
+        if join_time.tzinfo is None:
+             join_time = join_time.replace(tzinfo=datetime.timezone.utc)
+        current_session_seconds = (now - join_time).total_seconds()
         pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
         
     current_balance = saved_balance + pending_currency
     
     if amount > current_balance:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"You don't have enough {CURRENCY_NAME} to make that bet.\n"
             f"Your current balance is: **{current_balance} {CURRENCY_NAME}**", 
             ephemeral=True
         )
         return
-
-    await interaction.response.defer()
-    
+        
     is_win = random.choice([True, False]) 
     
     if is_win:
         await update_balance(user_id, amount) 
         new_balance = current_balance + amount
-        
         await interaction.followup.send(
-            f"**You won!**\n\n"
+            f"🪙 **It's Heads! You won!** 🪙\n\n"
             f"You won **{amount} {CURRENCY_NAME}**.\n"
             f"Your new balance is **{new_balance} {CURRENCY_NAME}**."
         )
-    
     else:
         await update_balance(user_id, -amount)
         new_balance = current_balance - amount
-        
         await interaction.followup.send(
-            f"**You lost!**\n\n"
+            f"💀 **It's Tails! You lost!** 💀\n\n"
             f"You lost **{amount} {CURRENCY_NAME}**.\n"
             f"Your new balance is **{new_balance} {CURRENCY_NAME}**."
         )
