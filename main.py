@@ -14,6 +14,7 @@ import asyncio
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
 
+DB_NAME = "user_data.db"
 CURRENCY_NAME = "GB"
 SECONDS_PER_CURRENCY = 60
 
@@ -24,27 +25,32 @@ HORSE_DEFINITIONS = {
     "Yellow": "🟨🐎",
     "Purple": "🟪🐎"
 }
+
 HORSE_COLORS = list(HORSE_DEFINITIONS.keys())
 
 RACE_TRACK_LENGTH = 20
 RACE_PAYOUT_MULTIPLIER = 4
-RACE_LOCKOUT_MINUTES = [0, 1, 2, 30, 31, 32] 
+RACE_LOCKOUT_MINUTES = [0, 1, 2, 30, 31, 32]
 
 REDS = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]
 BLACKS = [2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35]
 
 active_sessions = {}
+
 db_pool = None
 
 async def init_database_pool():
     """Initializes the PostgreSQL connection pool and creates all tables."""
     global db_pool
+    
     database_url = os.getenv('DATABASE_URL')
     if not database_url:
         print("DATABASE_URL not set. Bot cannot connect to database.")
         return
+        
     try:
         db_pool = await asyncpg.create_pool(database_url)
+        
         async with db_pool.acquire() as conn:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS user_stats (
@@ -53,12 +59,14 @@ async def init_database_pool():
                     balance BIGINT DEFAULT 0
                 )
             """)
+            
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS guild_configs (
                     guild_id BIGINT PRIMARY KEY,
                     race_channel_id BIGINT
                 )
             """)
+            
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS horse_bets (
                     user_id BIGINT,
@@ -68,56 +76,14 @@ async def init_database_pool():
                     PRIMARY KEY (user_id, guild_id)
                 )
             """)
+            
         print("Database pool initialized and all tables checked.")
+        
     except Exception as e:
         print(f"Error initializing database pool: {e}")
 
-async def record_vc_session(user_id: int, seconds_to_add: int, currency_to_add: int):
-    if not db_pool: return
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO user_stats (user_id, total_seconds, balance)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (user_id) DO UPDATE SET
-                total_seconds = user_stats.total_seconds + $2,
-                balance = user_stats.balance + $3
-        """, user_id, seconds_to_add, currency_to_add)
-
-async def update_balance(user_id: int, amount: int):
-    if not db_pool: return
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO user_stats (user_id, balance)
-            VALUES ($1, $2)
-            ON CONFLICT (user_id) DO UPDATE SET
-                balance = user_stats.balance + $2
-        """, user_id, amount)
-
-async def get_balance(user_id: int) -> int:
-    if not db_pool: return 0
-    async with db_pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT balance FROM user_stats WHERE user_id = $1", user_id)
-        return row['balance'] if row else 0
-
-async def get_total_time(user_id: int) -> int:
-    if not db_pool: return 0
-    async with db_pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT total_seconds FROM user_stats WHERE user_id = $1", user_id)
-        return row['total_seconds'] if row else 0
-
-async def get_all_time_data():
-    if not db_pool: return {}
-    async with db_pool.acquire() as conn:
-        rows = await conn.fetch("SELECT user_id, total_seconds FROM user_stats")
-        return {row['user_id']: row['total_seconds'] for row in rows}
-
-async def get_all_currency_data():
-    if not db_pool: return {}
-    async with db_pool.acquire() as conn:
-        rows = await conn.fetch("SELECT user_id, balance FROM user_stats")
-        return {row['user_id']: row['balance'] for row in rows}
-
 async def set_race_channel(guild_id: int, channel_id: int):
+    """Sets or updates the racing channel for a guild."""
     if not db_pool: return
     async with db_pool.acquire() as conn:
         await conn.execute("""
@@ -128,21 +94,25 @@ async def set_race_channel(guild_id: int, channel_id: int):
         """, guild_id, channel_id)
 
 async def remove_race_channel(guild_id: int):
+    """Disables horse racing for a guild."""
     if not db_pool: return
     async with db_pool.acquire() as conn:
         await conn.execute("DELETE FROM guild_configs WHERE guild_id = $1", guild_id)
 
 async def get_all_race_configs():
+    """Gets all guild_id, channel_id pairs that have racing enabled."""
     if not db_pool: return []
     async with db_pool.acquire() as conn:
         return await conn.fetch("SELECT guild_id, race_channel_id FROM guild_configs")
 
 async def get_guild_race_config(guild_id: int):
+    """Checks if a single guild has racing enabled."""
     if not db_pool: return None
     async with db_pool.acquire() as conn:
         return await conn.fetchrow("SELECT race_channel_id FROM guild_configs WHERE guild_id = $1", guild_id)
 
 async def place_bet(user_id: int, guild_id: int, amount: int, color: str):
+    """Places or updates a user's bet for the next race."""
     if not db_pool: return
     async with db_pool.acquire() as conn:
         await conn.execute("""
@@ -154,27 +124,77 @@ async def place_bet(user_id: int, guild_id: int, amount: int, color: str):
         """, user_id, guild_id, amount, color)
 
 async def get_bets_for_guild(guild_id: int):
+    """Gets all bets for a specific guild's race."""
     if not db_pool: return []
     async with db_pool.acquire() as conn:
         return await conn.fetch("SELECT user_id, bet_amount, horse_color FROM horse_bets WHERE guild_id = $1", guild_id)
 
 async def clear_bets_for_guild(guild_id: int):
+    """Deletes all bets for a guild after a race."""
     if not db_pool: return
     async with db_pool.acquire() as conn:
         await conn.execute("DELETE FROM horse_bets WHERE guild_id = $1", guild_id)
 
-async def get_user_bet_for_guild(user_id: int, guild_id: int):
-    """Gets a single user's current bet for a specific guild."""
-    if not db_pool: return None
+async def record_vc_session(user_id: int, seconds_to_add: int, currency_to_add: int):
+    """Updates both time and currency in the database after a VC session."""
+    if not db_pool: return
     async with db_pool.acquire() as conn:
-        return await conn.fetchrow("SELECT bet_amount, horse_color FROM horse_bets WHERE user_id = $1 AND guild_id = $2", user_id, guild_id)
+        await conn.execute("""
+            INSERT INTO user_stats (user_id, total_seconds, balance)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (user_id) DO UPDATE SET
+                total_seconds = user_stats.total_seconds + $2,
+                balance = user_stats.balance + $3
+        """, user_id, seconds_to_add, currency_to_add)
+
+async def update_balance(user_id: int, amount: int):
+    """Simple function to give/take currency (for admin commands)."""
+    if not db_pool: return
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO user_stats (user_id, balance)
+            VALUES ($1, $2)
+            ON CONFLICT (user_id) DO UPDATE SET
+                balance = user_stats.balance + $2
+        """, user_id, amount)
+
+async def get_balance(user_id: int) -> int:
+    """Gets the total balance for a user."""
+    if not db_pool: return 0
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT balance FROM user_stats WHERE user_id = $1", user_id)
+        return row['balance'] if row else 0
+
+async def get_total_time(user_id: int) -> int:
+    """Gets the total voice time in seconds for a user."""
+    if not db_pool: return 0
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT total_seconds FROM user_stats WHERE user_id = $1", user_id)
+        return row['total_seconds'] if row else 0
+
+async def get_all_time_data():
+    """Gets all users and their total_seconds from the database."""
+    if not db_pool: return {}
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("SELECT user_id, total_seconds FROM user_stats")
+        return {row['user_id']: row['total_seconds'] for row in rows}
+
+async def get_all_currency_data():
+    """Gets all users and their balance from the database."""
+    if not db_pool: return {}
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("SELECT user_id, balance FROM user_stats")
+        return {row['user_id']: row['balance'] for row in rows}
 
 def format_duration(total_seconds: int) -> str:
+    """Converts seconds into a readable string."""
     if total_seconds == 0:
         return "0 seconds"
+        
     hours = total_seconds // 3600
     minutes = (total_seconds % 3600) // 60
     seconds = total_seconds % 60
+    
     parts = []
     if hours > 0:
         parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
@@ -182,9 +202,11 @@ def format_duration(total_seconds: int) -> str:
         parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
     if seconds > 0:
         parts.append(f"{seconds} second{'s' if seconds != 1 else ''}")
+        
     return ", ".join(parts)
 
 def create_deck():
+    """Creates a standard 52-card deck and shuffles it."""
     ranks = [2, 3, 4, 5, 6, 7, 8, 9, 10, 'J', 'Q', 'K', 'A']
     suits = ['♥', '♦', '♣', '♠']
     deck = [{'rank': rank, 'suit': suit} for rank in ranks for suit in suits]
@@ -192,8 +214,10 @@ def create_deck():
     return deck
 
 def calculate_hand_value(hand):
+    """Calculates the value of a hand, handling Aces correctly."""
     value = 0
     ace_count = 0
+    
     for card in hand:
         rank = card['rank']
         if rank in ['J', 'Q', 'K']:
@@ -203,19 +227,22 @@ def calculate_hand_value(hand):
             ace_count += 1
         else:
             value += int(rank)
+            
     while value > 21 and ace_count > 0:
         value -= 10
         ace_count -= 1
+        
     return value
 
 def format_hand(hand):
+    """Returns a string representation of a hand."""
     return "  ".join([f"**`{card['rank']}{card['suit']}`**" for card in hand])
 
 def format_dealer_hand_hidden(hand):
+    """Returns a string for the dealer's hand with one card hidden."""
     if not hand:
         return ""
     return f"**`{hand[0]['rank']}{hand[0]['suit']}`** **`[ ? ]`**"
-
 
 @tasks.loop(minutes=1.0)
 async def start_race_loop():
@@ -223,31 +250,37 @@ async def start_race_loop():
     
     if db_pool:
         try:
+
             await asyncio.wait_for(
                 db_pool.fetchval("SELECT 1"), 
                 timeout=10.0
             )
+
         except asyncio.TimeoutError:
             print("Database keep-alive ping timed out (DB was asleep).")
         except Exception as e:
             print(f"Database keep-alive ping failed: {e}")
-
+ 
     now = datetime.datetime.now(datetime.timezone.utc)
     
     if now.minute == 0 or now.minute == 30:
-        print(f"Race time! ({now.hour}:{now.minute:02d} UTC) Running races.")
+        print(f"Race time! ({now.hour}:{now.minute:02d}) Running global races.")
+        
         asyncio.create_task(run_global_races())
 
 async def run_global_races():
     """Fetches all configured guilds and starts a race in each one."""
+    
     try:
         configs = await get_all_race_configs()
+        
         tasks_to_run = []
         for (guild_id, channel_id) in configs:
             tasks_to_run.append(run_race_in_channel(guild_id, channel_id))
         
+
         await asyncio.gather(*tasks_to_run)
-        print("All per-server races finished.")
+        print("All races finished.")
     except Exception as e:
         print(f"CRITICAL ERROR in run_global_races: {e}")
 
@@ -310,13 +343,15 @@ async def run_race_in_channel(guild_id: int, channel_id: int):
 
     results_description = f"**Winner:** {HORSE_DEFINITIONS[winner]} **{winner} Horse**\n\n**Results:**\n"
     
+    user_ids_to_fetch = {bet['user_id'] for bet in bets}
+    
     user_map = {}
-    for bet in bets:
-        if bet['user_id'] not in user_map:
-             try:
-                user_map[bet['user_id']] = (await client.fetch_user(bet['user_id'])).display_name
-             except:
-                user_map[bet['user_id']] = "<Unknown User>"
+    for user_id in user_ids_to_fetch:
+        try:
+            user = await client.fetch_user(user_id)
+            user_map[user_id] = user.display_name
+        except:
+            user_map[user_id] = "<Unknown User>"
 
     for bet in bets:
         user_id = bet['user_id']
@@ -326,18 +361,16 @@ async def run_race_in_channel(guild_id: int, channel_id: int):
         
         if horse_color == winner:
             winnings = bet_amount * RACE_PAYOUT_MULTIPLIER
-            total_payout = winnings + bet_amount
-            
-            await update_balance(user_id, total_payout)
-            results_description += f"**{username}** won **{winnings} {CURRENCY_NAME}**! (Total Payout: {total_payout})\n"
+            await update_balance(user_id, winnings)
+            results_description += f"✅ **{username}** won **{winnings} {CURRENCY_NAME}**!\n"
         else:
-            results_description += f"**{username}** lost **{bet_amount} {CURRENCY_NAME}**.\n"
+            await update_balance(user_id, -bet_amount)
+            results_description += f"❌ **{username}** lost **{bet_amount} {CURRENCY_NAME}**.\n"
             
     results_embed = discord.Embed(title="Race Payouts", description=results_description, color=discord.Color.gold())
     await channel.send(embed=results_embed)
     
     await clear_bets_for_guild(guild_id)
-
 
 class aclient(discord.Client):
     def __init__(self):
@@ -381,11 +414,11 @@ class aclient(discord.Client):
                 join_time = active_sessions.pop(member.id)
 
                 if join_time.tzinfo is None:
-                     join_time = join_time.replace(tzinfo=datetime.timezone.utc)
-                     
+                    join_time = join_time.replace(tzinfo=datetime.timezone.utc)
+
                 duration_seconds = int((now - join_time).total_seconds())
                 
-                currency_earned = int(duration_seconds / SECS_PER_CURRENCY)
+                currency_earned = int(duration_seconds / SECONDS_PER_CURRENCY)
                 
                 if duration_seconds > 0:
                     await record_vc_session(member.id, duration_seconds, currency_earned)
@@ -405,28 +438,25 @@ async def voicetime(interaction: discord.Interaction, user: discord.Member = Non
     
     await interaction.response.defer()
     
-    target_user = user if user else interaction.user
+    if user is None:
+        user = interaction.user
         
-    if target_user.bot:
+    if user.bot:
         await interaction.followup.send("Bots don't have voice time!", ephemeral=True)
         return
 
-    total_seconds_saved = await get_total_time(target_user.id)
-    total_seconds_current_session = 0
+    total_seconds_saved = await get_total_time(user.id)
     
-    now = datetime.datetime.now(datetime.timezone.utc)
-    if target_user.id in active_sessions:
-        join_time = active_sessions[target_user.id]
-        if join_time.tzinfo is None:
-             join_time = join_time.replace(tzinfo=datetime.timezone.utc)
-        
-        current_session_seconds = (now - join_time).total_seconds()
-        if current_session_seconds > 0:
-            total_seconds_current_session = current_session_seconds
+    total_seconds_current_session = 0
+    if user.id in active_sessions:
+        join_time = active_sessions[user.id]
+        total_seconds_current_session = (datetime.datetime.now() - join_time).total_seconds()
 
     total_time = total_seconds_saved + int(total_seconds_current_session)
+    
     readable_time = format_duration(total_time)
-    await interaction.followup.send(f"**{target_user.display_name}** has spent a total of:\n`{readable_time}` in voice channels.")
+    
+    await interaction.followup.send(f"**{user.display_name}** has spent a total of:\n`{readable_time}` in voice channels.")
 
 @tree.command(name="balance", description="Check your total currency balance.")
 @app_commands.describe(user="The user to check (optional, defaults to you)")
@@ -434,27 +464,32 @@ async def balance(interaction: discord.Interaction, user: discord.Member = None)
     
     await interaction.response.defer()
 
-    target_user = user if user else interaction.user
+    if user is None:
+        user = interaction.user
         
-    if target_user.bot:
+    if user.bot:
         await interaction.followup.send("Bots don't have currency!", ephemeral=True)
         return
 
-    user_balance_saved = await get_balance(target_user.id)
-    pending_currency = 0
+    user_balance_saved = await get_balance(user.id)
     
-    now = datetime.datetime.now(datetime.timezone.utc)
-    if target_user.id in active_sessions:
-        join_time = active_sessions[target_user.id]
-        if join_time.tzinfo is None:
-             join_time = join_time.replace(tzinfo=datetime.timezone.utc)
-
-        current_session_seconds = (now - join_time).total_seconds()
-        if current_session_seconds > 0:
-            pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
+    pending_currency = 0
+    if user.id in active_sessions:
+        join_time = active_sessions[user.id]
+        current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
+        pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
 
     total_balance = user_balance_saved + pending_currency
-    await interaction.followup.send(f"**{target_user.display_name}** has **{total_balance} {CURRENCY_NAME}**.")
+
+    await interaction.followup.send(f"**{user.display_name}** has **{total_balance} {CURRENCY_NAME}**.")
+
+
+async def admin_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+    else:
+        print(f"Error in admin command: {error}")
+        await interaction.response.send_message("An error occurred.", ephemeral=True)
 
 @tree.command(name="leaderboard-time", description="Shows the global leaderboard for voice time.")
 async def leaderboard_time(interaction: discord.Interaction):
@@ -462,20 +497,16 @@ async def leaderboard_time(interaction: discord.Interaction):
     
     leaderboard_data = await get_all_time_data()
     
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now()
     for user_id, join_time in active_sessions.items():
-        if join_time.tzinfo is None:
-             join_time = join_time.replace(tzinfo=datetime.timezone.utc)
         current_session_seconds = (now - join_time).total_seconds()
         
         saved_time = leaderboard_data.get(user_id, 0)
         
-        if current_session_seconds > 0:
-            leaderboard_data[user_id] = saved_time + int(current_session_seconds)
-        else:
-            leaderboard_data[user_id] = saved_time
+        leaderboard_data[user_id] = saved_time + int(current_session_seconds)
 
     sorted_leaderboard = sorted(leaderboard_data.items(), key=lambda item: item[1], reverse=True)
+    
     top_10 = sorted_leaderboard[:10]
     
     if not top_10:
@@ -492,13 +523,17 @@ async def leaderboard_time(interaction: discord.Interaction):
     client_obj = interaction.client 
     
     for i, (user_id, total_seconds) in enumerate(top_10):
+
         user = client_obj.get_user(user_id)
         if user is None:
             try:
                 user = await client_obj.fetch_user(user_id)
                 username = user.display_name
-            except:
+            except discord.NotFound:
                 username = "<Unknown User>"
+            except Exception as e:
+                print(f"Error fetching user {user_id}: {e}")
+                username = "<Error>"
         else:
             username = user.display_name
         
@@ -514,21 +549,17 @@ async def leaderboard_currency(interaction: discord.Interaction):
 
     leaderboard_data = await get_all_currency_data()
     
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now()
     for user_id, join_time in active_sessions.items():
-        if join_time.tzinfo is None:
-             join_time = join_time.replace(tzinfo=datetime.timezone.utc)
         current_session_seconds = (now - join_time).total_seconds()
+        pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
         
         saved_balance = leaderboard_data.get(user_id, 0)
         
-        if current_session_seconds > 0:
-            pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
-            leaderboard_data[user_id] = saved_balance + pending_currency
-        else:
-            leaderboard_data[user_id] = saved_balance
+        leaderboard_data[user_id] = saved_balance + pending_currency
 
     sorted_leaderboard = sorted(leaderboard_data.items(), key=lambda item: item[1], reverse=True)
+    
     top_10 = sorted_leaderboard[:10]
     
     if not top_10:
@@ -550,8 +581,11 @@ async def leaderboard_currency(interaction: discord.Interaction):
             try:
                 user = await client_obj.fetch_user(user_id)
                 username = user.display_name
-            except:
+            except discord.NotFound:
                 username = "<Unknown User>"
+            except Exception as e:
+                print(f"Error fetching user {user_id}: {e}")
+                username = "<Error>"
         else:
             username = user.display_name
         
@@ -564,24 +598,23 @@ async def leaderboard_currency(interaction: discord.Interaction):
 @app_commands.describe(amount="The amount of currency you want to bet")
 async def blackjack(interaction: discord.Interaction, amount: int):
     await interaction.response.defer()
-    
     user_id = interaction.user.id
     
     if amount <= 0:
         await interaction.followup.send("You must bet a positive amount.", ephemeral=True)
         return
-
-    now = datetime.datetime.now(datetime.timezone.utc)
+        
     saved_balance = await get_balance(user_id)
     pending_currency = 0
+    now = datetime.datetime.now(datetime.timezone.utc)
+    
     if user_id in active_sessions:
         join_time = active_sessions[user_id]
         if join_time.tzinfo is None:
              join_time = join_time.replace(tzinfo=datetime.timezone.utc)
         current_session_seconds = (now - join_time).total_seconds()
-        if current_session_seconds > 0:
-            pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
-            
+        pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
+        
     current_balance = saved_balance + pending_currency
     
     if amount > current_balance:
@@ -592,19 +625,13 @@ async def blackjack(interaction: discord.Interaction, amount: int):
         )
         return
         
-    await update_balance(user_id, -amount)
-    current_balance -= amount
-        
-    game_view = BlackjackView(interaction, amount, current_balance) 
+    game_view = BlackjackView(interaction, amount, current_balance)
     await game_view.start_game()
 
 @tree.command(name="pay", description="Give currency to another user.")
 @app_commands.describe(user="The user you want to give currency to", amount="The amount to give")
 async def donate(interaction: discord.Interaction, user: discord.Member, amount: int):
-    
-    # --- FIX: Defer immediately ---
     await interaction.response.defer()
-
     donator_id = interaction.user.id
     recipient_id = user.id
     
@@ -617,18 +644,18 @@ async def donate(interaction: discord.Interaction, user: discord.Member, amount:
     if user.bot:
         await interaction.followup.send(f"You cannot donate to a bot.", ephemeral=True)
         return
-
-    now = datetime.datetime.now(datetime.timezone.utc)
+        
     saved_balance = await get_balance(donator_id)
     pending_currency = 0
+    now = datetime.datetime.now(datetime.timezone.utc)
+    
     if donator_id in active_sessions:
         join_time = active_sessions[donator_id]
         if join_time.tzinfo is None:
              join_time = join_time.replace(tzinfo=datetime.timezone.utc)
         current_session_seconds = (now - join_time).total_seconds()
-        if current_session_seconds > 0:
-            pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
-            
+        pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
+        
     donator_balance = saved_balance + pending_currency
     
     if amount > donator_balance:
@@ -642,12 +669,10 @@ async def donate(interaction: discord.Interaction, user: discord.Member, amount:
     try:
         await update_balance(donator_id, -amount)
         await update_balance(recipient_id, amount)
-        
         await interaction.followup.send(
-            f"**Transaction Successful!**\n\n"
+            f"✅ **Transaction Successful!**\n\n"
             f"**{interaction.user.display_name}** gave **{amount} {CURRENCY_NAME}** to **{user.display_name}**."
         )
-        
     except Exception as e:
         print(f"Error during /donate transaction: {e}")
         await interaction.followup.send("An error occurred during the transaction. Please try again.", ephemeral=True)
@@ -666,20 +691,20 @@ async def donate(interaction: discord.Interaction, user: discord.Member, amount:
 ])
 async def roulette(interaction: discord.Interaction, amount: app_commands.Range[int, 1], bet: str):
     
-    user_id = interaction.user.id
     await interaction.response.defer()
+    user_id = interaction.user.id
 
-    now = datetime.datetime.now(datetime.timezone.utc)
     saved_balance = await get_balance(user_id)
     pending_currency = 0
+    now = datetime.datetime.now(datetime.timezone.utc)
+    
     if user_id in active_sessions:
         join_time = active_sessions[user_id]
         if join_time.tzinfo is None:
              join_time = join_time.replace(tzinfo=datetime.timezone.utc)
         current_session_seconds = (now - join_time).total_seconds()
-        if current_session_seconds > 0:
-            pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
-            
+        pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
+        
     current_balance = saved_balance + pending_currency
     
     if amount > current_balance:
@@ -689,16 +714,12 @@ async def roulette(interaction: discord.Interaction, amount: app_commands.Range[
             ephemeral=True
         )
         return
-
-    await update_balance(user_id, -amount)
-    current_balance -= amount
-
+        
     embed = discord.Embed(
         title="Roulette Spin",
         description=f"You bet **{amount} {CURRENCY_NAME}** on **{bet}**...\n\nSpinning... 🔴",
         color=discord.Color.gold()
     )
-
     msg = await interaction.followup.send(embed=embed)
     
     spin_frames = [
@@ -707,14 +728,14 @@ async def roulette(interaction: discord.Interaction, amount: app_commands.Range[
     ]
     
     for frame in spin_frames:
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.5) 
         embed.description = f"You bet **{amount} {CURRENCY_NAME}** on **{bet}**...\n\nSpinning... {frame}"
-        await msg.edit(embed=embed)
+        await msg.edit(embed=embed) 
     
     await asyncio.sleep(1)
     embed.description = f"You bet **{amount} {CURRENCY_NAME}** on **{bet}**...\n\n"
     await msg.edit(embed=embed)
-    await asyncio.sleep(1.5)
+    await asyncio.sleep(1.5) 
 
     spin_result = random.randint(0, 36)
     
@@ -737,10 +758,11 @@ async def roulette(interaction: discord.Interaction, amount: app_commands.Range[
     elif bet == spin_parity:
         is_win = True
         payout_multiplier = 1
+    
     if bet == "Green" and spin_color == "Green":
         is_win = True
         payout_multiplier = 35
-
+    
     embed.add_field(
         name="The wheel landed on...",
         value=f"**{spin_result} {spin_color}**",
@@ -749,23 +771,22 @@ async def roulette(interaction: discord.Interaction, amount: app_commands.Range[
 
     if is_win:
         winnings = amount * payout_multiplier
-        total_payout = winnings + amount
-
-        await update_balance(user_id, total_payout)
-        new_balance = current_balance + total_payout
+        await update_balance(user_id, winnings)
+        new_balance = current_balance + winnings
         
         embed.color = discord.Color.green()
         embed.add_field(
-            name="Your results", 
-            value=f"You won **{winnings} {CURRENCY_NAME}**! (Total Payout: {total_payout})\nYour new balance is **{new_balance} {CURRENCY_NAME}**.",
+            name="Your results",
+            value=f"You won **{winnings} {CURRENCY_NAME}**.\nYour new balance is **{new_balance} {CURRENCY_NAME}**.",
             inline=False
         )
     else:
-        new_balance = current_balance
+        await update_balance(user_id, -amount)
+        new_balance = current_balance - amount
         
         embed.color = discord.Color.red()
         embed.add_field(
-            name="Your results",
+            name="Your results!",
             value=f"You lost **{amount} {CURRENCY_NAME}**.\nYour new balance is **{new_balance} {CURRENCY_NAME}**.",
             inline=False
         )
@@ -800,7 +821,7 @@ async def disable_horserace(interaction: discord.Interaction):
         ephemeral=True
     )
 
-@tree.command(name="bet-horse", description="Place or update your bet for the next horse race.")
+@tree.command(name="bet-horse", description="Place a bet on the next horse race.")
 @app_commands.describe(
     amount="The amount of currency you want to bet",
     color="The color of the horse you're betting on"
@@ -812,73 +833,102 @@ async def disable_horserace(interaction: discord.Interaction):
     app_commands.Choice(name="🟨 Yellow", value="Yellow"),
     app_commands.Choice(name="🟪 Purple", value="Purple")
 ])
+
 async def bet_horse(interaction: discord.Interaction, amount: app_commands.Range[int, 1], color: str):
     await interaction.response.defer(ephemeral=True)
     user_id = interaction.user.id
     guild_id = interaction.guild_id
-
-    def get_next_race_timestamp(now_time):
-        if now_time.minute < 30:
-            next_race_dt = now_time.replace(minute=30, second=0, microsecond=0)
-        else:
-            next_race_dt = (now_time + datetime.timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
-        timestamp = int(next_race_dt.timestamp())
-        return f"<t:{timestamp}:R>"
 
     config = await get_guild_race_config(guild_id)
     if not config:
         await interaction.followup.send("Horse racing is not set up in this server. An admin must use `/setup-horserace`.")
         return
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now()
     if now.minute in RACE_LOCKOUT_MINUTES:
-        relative_time_str = get_next_race_timestamp(now)
-        await interaction.followup.send(
-            f"Sorry, bets are **LOCKED** for the current race.\n"
-            f"You can bet on the next race, which starts {relative_time_str}."
-        )
+        next_race_time = ":00" if now.minute >= 30 else ":30"
+        await interaction.followup.send(f"Sorry, bets are **LOCKED** for the race at {now.hour}{next_race_time}. Please bet on the *next* one.")
         return
 
     saved_balance = await get_balance(user_id)
     pending_currency = 0
     if user_id in active_sessions:
         join_time = active_sessions[user_id]
-        if join_time.tzinfo is None:
-             join_time = join_time.replace(tzinfo=datetime.timezone.utc)
-        current_session_seconds = (now - join_time).total_seconds()
-        if current_session_seconds > 0:
-            pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
+        current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
+        pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
     
     current_balance = saved_balance + pending_currency
     
-    old_bet = await get_user_bet_for_guild(user_id, guild_id)
-    old_bet_amount = old_bet['bet_amount'] if old_bet else 0
-    cost_to_change = amount - old_bet_amount
-    
-    if cost_to_change > current_balance:
+    if amount > current_balance:
         await interaction.followup.send(
             f"You don't have enough {CURRENCY_NAME} to make that bet.\n"
-            f"Your current balance is: **{current_balance} {CURRENCY_NAME}**.\n"
-            f"You need **{cost_to_change} {CURRENCY_NAME}** more to change your bet from {old_bet_amount} to {amount}."
+            f"Your current balance is: **{current_balance} {CURRENCY_NAME}**"
         )
         return
 
-    await update_balance(user_id, -cost_to_change)
     await place_bet(user_id, guild_id, amount, color)
+
+    if now.minute < 30:
+        next_race_time = now.replace(minute=30, second=0, microsecond=0)
+    else:
+        next_race_time = (now + datetime.timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+
+    timestamp = int(next_race_time.timestamp())
+    relative_time_str = f"<t:{timestamp}:R>"
     
-    relative_time_str = get_next_race_timestamp(now) 
+    await interaction.followup.send(
+        f"Your bet has been updated!\n"
+        f"You have **{amount} {CURRENCY_NAME}** on the **{HORSE_DEFINITIONS[color]} {color} Horse** for the race {relative_time_str}."
+    )
+
+@tree.command(name="coinflip", description="Gamble your currency on a 50/50 coin flip.")
+@app_commands.describe(amount="The amount of currency you want to bet")
+async def coinflip(interaction: discord.Interaction, amount: int):
+    await interaction.response.defer()
+    user_id = interaction.user.id
     
-    if old_bet_amount > 0:
+    if amount <= 0:
+        await interaction.followup.send("You must bet a positive amount.", ephemeral=True)
+        return
+        
+    saved_balance = await get_balance(user_id)
+    pending_currency = 0
+    now = datetime.datetime.now(datetime.timezone.utc)
+    
+    if user_id in active_sessions:
+        join_time = active_sessions[user_id]
+        if join_time.tzinfo is None:
+             join_time = join_time.replace(tzinfo=datetime.timezone.utc)
+        current_session_seconds = (now - join_time).total_seconds()
+        pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
+        
+    current_balance = saved_balance + pending_currency
+    
+    if amount > current_balance:
         await interaction.followup.send(
-            f"Your bet for *this server* has been **updated**!\n"
-            f"Your balance was adjusted by **{cost_to_change} {CURRENCY_NAME}**.\n"
-            f"You are now betting **{amount} {CURRENCY_NAME}** on the **{HORSE_DEFINITIONS[color]} {color} Horse** for the race {relative_time_str}."
+            f"You don't have enough {CURRENCY_NAME} to make that bet.\n"
+            f"Your current balance is: **{current_balance} {CURRENCY_NAME}**", 
+            ephemeral=True
+        )
+        return
+        
+    is_win = random.choice([True, False]) 
+    
+    if is_win:
+        await update_balance(user_id, amount) 
+        new_balance = current_balance + amount
+        await interaction.followup.send(
+            f"**It's Heads! You won!**\n\n"
+            f"You won **{amount} {CURRENCY_NAME}**.\n"
+            f"Your new balance is **{new_balance} {CURRENCY_NAME}**."
         )
     else:
+        await update_balance(user_id, -amount)
+        new_balance = current_balance - amount
         await interaction.followup.send(
-            f"Your bet for *this server* has been placed!\n"
-            f"**{amount} {CURRENCY_NAME}** has been deducted from your balance.\n"
-            f"You are betting on the **{HORSE_DEFINITIONS[color]} {color} Horse** for the race {relative_time_str}."
+            f"**It's Tails! You lost!**\n\n"
+            f"You lost **{amount} {CURRENCY_NAME}**.\n"
+            f"Your new balance is **{new_balance} {CURRENCY_NAME}**."
         )
 
 class BlackjackView(discord.ui.View):
@@ -889,12 +939,15 @@ class BlackjackView(discord.ui.View):
         self.bet_amount = bet_amount
         self.current_balance = start_balance
         self.game_over = False
+
         self.deck = create_deck()
         self.player_hand = [self.deck.pop(), self.deck.pop()]
         self.dealer_hand = [self.deck.pop(), self.deck.pop()]
     
     async def start_game(self):
+        """Sends the initial game message."""
         player_score = calculate_hand_value(self.player_hand)
+        
         if player_score == 21:
             await self.end_game("win", "Blackjack! You win!")
         else:
@@ -902,6 +955,7 @@ class BlackjackView(discord.ui.View):
             await self.interaction.followup.send(embed=embed, view=self)
 
     def create_game_embed(self, title: str, status: str, reveal_dealer=False, final_color: discord.Color = None):
+        """Creates the embed for the game state."""
         player_score = calculate_hand_value(self.player_hand)
         
         if final_color:
@@ -921,38 +975,49 @@ class BlackjackView(discord.ui.View):
             description=f"**Bet:** {self.bet_amount} {CURRENCY_NAME}\n{status}",
             color=embed_color
         )
-        embed.add_field(name=f"Your Hand ({player_score})", value=format_hand(self.player_hand), inline=False)
-        embed.add_field(name=f"Dealer's Hand ({dealer_score})", value=dealer_hand_str, inline=False)
+        embed.add_field(
+            name=f"Your Hand ({player_score})",
+            value=format_hand(self.player_hand),
+            inline=False
+        )
+        embed.add_field(
+            name=f"Dealer's Hand ({dealer_score})",
+            value=dealer_hand_str,
+            inline=False
+        )
         embed.set_footer(text=f"{self.player.display_name}'s game")
         return embed
 
     async def disable_buttons(self):
+        """Disables all buttons in the view."""
         for item in self.children:
             if isinstance(item, discord.ui.Button):
                 item.disabled = True
         self.game_over = True
 
     async def end_game(self, result: str, message: str):
+        """Handles the end of the game, updates balance, and edits message."""
         await self.disable_buttons()
         
         status_message = ""
-        final_game_color = discord.Color.gold() 
+        final_game_color = discord.Color.gold()
         
         if result == "win":
-            payout = self.bet_amount * 2
-            await update_balance(self.player.id, payout)
-            new_balance = self.current_balance + payout 
+            await update_balance(self.player.id, self.bet_amount)
+            new_balance = self.current_balance + self.bet_amount 
             status_message = f"You won {self.bet_amount} {CURRENCY_NAME}!\nNew Balance: **{new_balance}**"
             final_game_color = discord.Color.green()
+            
         elif result == "lose":
-            new_balance = self.current_balance
+            await update_balance(self.player.id, -self.bet_amount)
+            new_balance = self.current_balance - self.bet_amount 
             status_message = f"You lost {self.bet_amount} {CURRENCY_NAME}!\nNew Balance: **{new_balance}**"
             final_game_color = discord.Color.red()
+            
         elif result == "push":
-            await update_balance(self.player.id, self.bet_amount)
-            new_balance = self.current_balance + self.bet_amount
+            new_balance = self.current_balance
             status_message = f"It's a push! Bet returned.\nBalance: **{new_balance}**"
-        
+            
         final_embed = self.create_game_embed(message, status_message, reveal_dealer=True, final_color=final_game_color)
         
         try:
@@ -968,6 +1033,7 @@ class BlackjackView(discord.ui.View):
         if not self.game_over:
             await self.end_game("lose", "Game timed out! You forfeit your bet.")
 
+    
     @ui.button(label="Hit", style=discord.ButtonStyle.green)
     async def hit(self, interaction: discord.Interaction, button: ui.Button):
         if interaction.user.id != self.player.id:
@@ -996,6 +1062,7 @@ class BlackjackView(discord.ui.View):
         await self.dealer_turn()
 
     async def dealer_turn(self):
+        """The dealer's logic after the player stands."""
         dealer_score = calculate_hand_value(self.dealer_hand)
         
         while dealer_score < 17:
