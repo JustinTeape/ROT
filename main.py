@@ -433,11 +433,15 @@ async def voicetime(interaction: discord.Interaction, user: discord.Member = Non
     total_seconds_saved = await get_total_time(user.id)
     
     total_seconds_current_session = 0
+    
+    now = datetime.datetime.now(datetime.timezone.utc)
     if user.id in active_sessions:
         join_time = active_sessions[user.id]
+
         if join_time.tzinfo is None:
-            join_time = join_time.replace(tzinfo=datetime.timezone.utc)
-        total_seconds_current_session = (datetime.datetime.now() - join_time).total_seconds()
+             join_time = join_time.replace(tzinfo=datetime.timezone.utc)
+             
+        total_seconds_current_session = (now - join_time).total_seconds()
 
     total_time = total_seconds_saved + int(total_seconds_current_session)
     
@@ -461,12 +465,16 @@ async def balance(interaction: discord.Interaction, user: discord.Member = None)
     user_balance_saved = await get_balance(user.id)
     
     pending_currency = 0
+
+    now = datetime.datetime.now(datetime.timezone.utc)
     if user.id in active_sessions:
         join_time = active_sessions[user.id]
+
         if join_time.tzinfo is None:
-            join_time = join_time.replace(tzinfo=datetime.timezone.utc)
-        current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
-        pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
+             join_time = join_time.replace(tzinfo=datetime.timezone.utc)
+             
+        current_session_seconds = (now - join_time).total_seconds()
+        pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
 
     total_balance = user_balance_saved + pending_currency
 
