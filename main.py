@@ -802,9 +802,8 @@ async def disable_horserace(interaction: discord.Interaction):
         ephemeral=True
     )
 
-# --- HORSE RACE PUBLIC COMMAND (CLEANED UP) ---
 
-@tree.command(name="bet-horse", description="Place a bet on the next horse race.")
+@tree.command(name="bet-horse", description="Place or update your bet for the next horse race.")
 @app_commands.describe(
     amount="The amount of currency you want to bet",
     color="The color of the horse you're betting on"
@@ -816,6 +815,12 @@ async def disable_horserace(interaction: discord.Interaction):
     app_commands.Choice(name="🟨 Yellow", value="Yellow"),
     app_commands.Choice(name="🟪 Purple", value="Purple")
 ])
+async def get_user_bet_for_guild(user_id: int, guild_id: int):
+    """Gets a single user's current bet for a specific guild."""
+    if not db_pool: return None
+    async with db_pool.acquire() as conn:
+        return await conn.fetchrow("SELECT bet_amount, horse_color FROM horse_bets WHERE user_id = $1 AND guild_id = $2", user_id, guild_id)
+
 async def bet_horse(interaction: discord.Interaction, amount: app_commands.Range[int, 1], color: str):
     await interaction.response.defer(ephemeral=True)
     user_id = interaction.user.id
@@ -826,7 +831,6 @@ async def bet_horse(interaction: discord.Interaction, amount: app_commands.Range
             next_race_dt = now_time.replace(minute=30, second=0, microsecond=0)
         else:
             next_race_dt = (now_time + datetime.timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
-        
         timestamp = int(next_race_dt.timestamp())
         return f"<t:{timestamp}:R>"
 
@@ -838,7 +842,6 @@ async def bet_horse(interaction: discord.Interaction, amount: app_commands.Range
     now = datetime.datetime.now(datetime.timezone.utc)
     if now.minute in RACE_LOCKOUT_MINUTES:
         relative_time_str = get_next_race_timestamp(now)
-        
         await interaction.followup.send(
             f"Sorry, bets are **LOCKED** for the current race.\n"
             f"You can bet on the next race, which starts {relative_time_str}."
@@ -856,21 +859,37 @@ async def bet_horse(interaction: discord.Interaction, amount: app_commands.Range
     
     current_balance = saved_balance + pending_currency
     
-    if amount > current_balance:
+    old_bet = await get_user_bet_for_guild(user_id, guild_id)
+    old_bet_amount = old_bet['bet_amount'] if old_bet else 0
+
+    cost_to_change = amount - old_bet_amount
+    
+    if cost_to_change > current_balance:
         await interaction.followup.send(
             f"You don't have enough {CURRENCY_NAME} to make that bet.\n"
-            f"Your current balance is: **{current_balance} {CURRENCY_NAME}**"
+            f"Your current balance is: **{current_balance} {CURRENCY_NAME}**.\n"
+            f"You need **{cost_to_change} {CURRENCY_NAME}** more to change your bet from {old_bet_amount} to {amount}."
         )
         return
 
+    await update_balance(user_id, -cost_to_change)
+    
     await place_bet(user_id, guild_id, amount, color)
-
+    
     relative_time_str = get_next_race_timestamp(now) 
     
-    await interaction.followup.send(
-        f"Your bet has been updated!\n"
-        f"You have **{amount} {CURRENCY_NAME}** on the **{HORSE_DEFINITIONS[color]} {color} Horse** for the race {relative_time_str}."
-    )
+    if old_bet_amount > 0:
+        await interaction.followup.send(
+            f"Your bet for *this server* has been **updated**!\n"
+            f"Your balance was adjusted by **{cost_to_change} {CURRENCY_NAME}**.\n"
+            f"You are now betting **{amount} {CURRENCY_NAME}** on the **{HORSE_DEFINITIONS[color]} {color} Horse** for the race {relative_time_str}."
+        )
+    else:
+        await interaction.followup.send(
+            f"Your bet for *this server* has been placed!\n"
+            f"**{amount} {CURRENCY_NAME}** has been deducted from your balance.\n"
+            f"You are betting on the **{HORSE_DEFINITIONS[color]} {color} Horse** for the race {relative_time_str}."
+        )
 
 
 @tree.command(name="coinflip", description="Gamble your currency on a 50/50 coin flip.")
