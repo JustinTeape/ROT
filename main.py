@@ -833,6 +833,11 @@ async def disable_horserace(interaction: discord.Interaction):
     app_commands.Choice(name="🟨 Yellow", value="Yellow"),
     app_commands.Choice(name="🟪 Purple", value="Purple")
 ])
+async def get_user_bet_for_guild(user_id: int, guild_id: int):
+    """Gets a single user's current bet for a specific guild."""
+    if not db_pool: return None
+    async with db_pool.acquire() as conn:
+        return await conn.fetchrow("SELECT bet_amount, horse_color FROM horse_bets WHERE user_id = $1 AND guild_id = $2", user_id, guild_id)
 
 async def bet_horse(interaction: discord.Interaction, amount: app_commands.Range[int, 1], color: str):
     await interaction.response.defer(ephemeral=True)
