@@ -135,6 +135,12 @@ async def clear_bets_for_guild(guild_id: int):
     async with db_pool.acquire() as conn:
         await conn.execute("DELETE FROM horse_bets WHERE guild_id = $1", guild_id)
 
+async def get_user_bet_for_guild(user_id: int, guild_id: int):
+    """Gets a single user's current bet for a specific guild."""
+    if not db_pool: return None
+    async with db_pool.acquire() as conn:
+        return await conn.fetchrow("SELECT bet_amount, horse_color FROM horse_bets WHERE user_id = $1 AND guild_id = $2", user_id, guild_id)
+
 async def record_vc_session(user_id: int, seconds_to_add: int, currency_to_add: int):
     """Updates both time and currency in the database after a VC session."""
     if not db_pool: return
@@ -341,10 +347,11 @@ async def run_race_in_channel(guild_id: int, channel_id: int):
         
         if horse_color == winner:
             winnings = bet_amount * RACE_PAYOUT_MULTIPLIER
-            await update_balance(user_id, winnings)
-            results_description += f"✅ **{username}** won **{winnings} {CURRENCY_NAME}**!\n"
+            total_payout = winnings + bet_amount
+            
+            await update_balance(user_id, total_payout)
+            results_description += f"**{username}** won **{winnings} {CURRENCY_NAME}**! (Total Payout: {total_payout})\n"
         else:
-            await update_balance(user_id, -bet_amount)
             results_description += f"❌ **{username}** lost **{bet_amount} {CURRENCY_NAME}**.\n"
             
     results_embed = discord.Embed(title="Race Payouts", description=results_description, color=discord.Color.gold())
@@ -694,7 +701,10 @@ async def roulette(interaction: discord.Interaction, amount: app_commands.Range[
             ephemeral=True
         )
         return
-        
+
+    await update_balance(user_id, -amount)
+    current_balance -= amount
+
     embed = discord.Embed(
         title="Roulette Spin",
         description=f"You bet **{amount} {CURRENCY_NAME}** on **{bet}**...\n\nSpinning... 🔴",
@@ -752,8 +762,10 @@ async def roulette(interaction: discord.Interaction, amount: app_commands.Range[
 
     if is_win:
         winnings = amount * payout_multiplier
-        await update_balance(user_id, winnings)
-        new_balance = current_balance + winnings
+        total_payout = winnings + amount
+
+        await update_balance(user_id, total_payout)
+        new_balance = current_balance + total_payout
         
         embed.color = discord.Color.green()
         embed.add_field(
@@ -762,8 +774,7 @@ async def roulette(interaction: discord.Interaction, amount: app_commands.Range[
             inline=False
         )
     else:
-        await update_balance(user_id, -amount)
-        new_balance = current_balance - amount
+        new_balance = current_balance
         
         embed.color = discord.Color.red()
         embed.add_field(
@@ -815,11 +826,6 @@ async def disable_horserace(interaction: discord.Interaction):
     app_commands.Choice(name="🟨 Yellow", value="Yellow"),
     app_commands.Choice(name="🟪 Purple", value="Purple")
 ])
-async def get_user_bet_for_guild(user_id: int, guild_id: int):
-    """Gets a single user's current bet for a specific guild."""
-    if not db_pool: return None
-    async with db_pool.acquire() as conn:
-        return await conn.fetchrow("SELECT bet_amount, horse_color FROM horse_bets WHERE user_id = $1 AND guild_id = $2", user_id, guild_id)
 
 async def bet_horse(interaction: discord.Interaction, amount: app_commands.Range[int, 1], color: str):
     await interaction.response.defer(ephemeral=True)
