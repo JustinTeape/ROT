@@ -246,23 +246,9 @@ def format_dealer_hand_hidden(hand):
 
 @tasks.loop(minutes=1.0)
 async def start_race_loop():
-    """Checks every minute if it's time to start a race AND keeps DB alive."""
-    
-    if db_pool:
-        try:
+    """Checks every minute if it's time to start a race."""
+    now = datetime.datetime.now()
 
-            await asyncio.wait_for(
-                db_pool.fetchval("SELECT 1"), 
-                timeout=10.0
-            )
-
-        except asyncio.TimeoutError:
-            print("Database keep-alive ping timed out (DB was asleep).")
-        except Exception as e:
-            print(f"Database keep-alive ping failed: {e}")
- 
-    now = datetime.datetime.now(datetime.timezone.utc)
-    
     if now.minute == 0 or now.minute == 30:
         print(f"Race time! ({now.hour}:{now.minute:02d}) Running global races.")
         
@@ -393,7 +379,7 @@ class aclient(discord.Client):
         print(f"We have logged in as {self.user}.")
 
         print("Checking for users in VC on startup...")
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.datetime.now()
         for guild in self.guilds:
             for vc in guild.voice_channels:
                 for member in vc.members:
@@ -407,15 +393,11 @@ class aclient(discord.Client):
         if member.bot:
             return
 
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.datetime.now()
 
         if before.channel is not None and before.channel != after.channel:
             if member.id in active_sessions:
                 join_time = active_sessions.pop(member.id)
-
-                if join_time.tzinfo is None:
-                    join_time = join_time.replace(tzinfo=datetime.timezone.utc)
-
                 duration_seconds = int((now - join_time).total_seconds())
                 
                 currency_earned = int(duration_seconds / SECONDS_PER_CURRENCY)
