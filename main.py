@@ -8,6 +8,7 @@ import random
 from flask import Flask
 from threading import Thread
 from discord import ui
+from discord.ext import tasks
 import asyncio
 
 load_dotenv()
@@ -17,6 +18,20 @@ DB_NAME = "user_data.db"
 CURRENCY_NAME = "GB"
 SECONDS_PER_CURRENCY = 60
 
+HORSE_DEFINITIONS = {
+    "Red": "🟥🐎",
+    "Blue": "🟦🐎",
+    "Green": "🟩🐎",
+    "Yellow": "🟨🐎",
+    "Purple": "🟪🐎"
+}
+
+HORSE_COLORS = list(HORSE_DEFINITIONS.keys())
+
+RACE_TRACK_LENGTH = 20
+RACE_PAYOUT_MULTIPLIER = 4
+RACE_LOCKOUT_MINUTES = [0, 1, 2, 30, 31, 32]
+
 REDS = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]
 BLACKS = [2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35]
 
@@ -25,7 +40,7 @@ active_sessions = {}
 db_pool = None
 
 async def init_database_pool():
-    """Initializes the PostgreSQL connection pool and creates the table."""
+    """Initializes the PostgreSQL connection pool and creates all tables."""
     global db_pool
     
     database_url = os.getenv('DATABASE_URL')
@@ -44,11 +59,81 @@ async def init_database_pool():
                     balance BIGINT DEFAULT 0
                 )
             """)
-        print("Database pool initialized and table checked.")
+            
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS guild_configs (
+                    guild_id BIGINT PRIMARY KEY,
+                    race_channel_id BIGINT
+                )
+            """)
+            
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS horse_bets (
+                    user_id BIGINT,
+                    guild_id BIGINT,
+                    bet_amount BIGINT,
+                    horse_color TEXT,
+                    PRIMARY KEY (user_id, guild_id)
+                )
+            """)
+            
+        print("Database pool initialized and all tables checked.")
         
     except Exception as e:
         print(f"Error initializing database pool: {e}")
 
+async def set_race_channel(guild_id: int, channel_id: int):
+    """Sets or updates the racing channel for a guild."""
+    if not db_pool: return
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO guild_configs (guild_id, race_channel_id)
+            VALUES ($1, $2)
+            ON CONFLICT (guild_id) DO UPDATE SET
+                race_channel_id = $2
+        """, guild_id, channel_id)
+
+async def remove_race_channel(guild_id: int):
+    """Disables horse racing for a guild."""
+    if not db_pool: return
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM guild_configs WHERE guild_id = $1", guild_id)
+
+async def get_all_race_configs():
+    """Gets all guild_id, channel_id pairs that have racing enabled."""
+    if not db_pool: return []
+    async with db_pool.acquire() as conn:
+        return await conn.fetch("SELECT guild_id, race_channel_id FROM guild_configs")
+
+async def get_guild_race_config(guild_id: int):
+    """Checks if a single guild has racing enabled."""
+    if not db_pool: return None
+    async with db_pool.acquire() as conn:
+        return await conn.fetchrow("SELECT race_channel_id FROM guild_configs WHERE guild_id = $1", guild_id)
+
+async def place_bet(user_id: int, guild_id: int, amount: int, color: str):
+    """Places or updates a user's bet for the next race."""
+    if not db_pool: return
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO horse_bets (user_id, guild_id, bet_amount, horse_color)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (user_id, guild_id) DO UPDATE SET
+                bet_amount = $3,
+                horse_color = $4
+        """, user_id, guild_id, amount, color)
+
+async def get_bets_for_guild(guild_id: int):
+    """Gets all bets for a specific guild's race."""
+    if not db_pool: return []
+    async with db_pool.acquire() as conn:
+        return await conn.fetch("SELECT user_id, bet_amount, horse_color FROM horse_bets WHERE guild_id = $1", guild_id)
+
+async def clear_bets_for_guild(guild_id: int):
+    """Deletes all bets for a guild after a race."""
+    if not db_pool: return
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM horse_bets WHERE guild_id = $1", guild_id)
 
 async def record_vc_session(user_id: int, seconds_to_add: int, currency_to_add: int):
     """Updates both time and currency in the database after a VC session."""
@@ -159,6 +244,114 @@ def format_dealer_hand_hidden(hand):
         return ""
     return f"**`{hand[0]['rank']}{hand[0]['suit']}`** **`[ ? ]`**"
 
+@tasks.loop(minutes=1.0)
+async def start_race_loop():
+    """Checks every minute if it's time to start a race."""
+    now = datetime.datetime.now()
+
+    if now.minute == 0 or now.minute == 30:
+        print(f"Race time! ({now.hour}:{now.minute:02d}) Running global races.")
+        await run_global_races()
+
+async def run_global_races():
+    """Fetches all configured guilds and starts a race in each one."""
+    configs = await get_all_race_configs()
+    
+    tasks_to_run = []
+    for (guild_id, channel_id) in configs:
+        tasks_to_run.append(run_race_in_channel(guild_id, channel_id))
+    
+    await asyncio.gather(*tasks_to_run)
+    print("All races finished.")
+
+async def run_race_in_channel(guild_id: int, channel_id: int):
+    """Runs a single animated race in a specific channel."""
+    
+    channel = client.get_channel(channel_id)
+    if not channel:
+        print(f"Error: Channel {channel_id} for Guild {guild_id} not found. Skipping race.")
+        return
+
+    horse_positions = {color: 0 for color in HORSE_COLORS}
+    
+    def get_race_embed(title: str):
+        embed = discord.Embed(title=title, color=discord.Color.blue())
+        track_str = ""
+        for color in HORSE_COLORS:
+            pos = horse_positions[color]
+            track_str += "🏁" + ("." * (RACE_TRACK_LENGTH - pos)) + HORSE_DEFINITIONS[color] + ("." * pos) + "\n"
+        embed.description = track_str
+        embed.set_footer(text="The race is underway!")
+        return embed
+
+    try:
+        msg = await channel.send(embed=get_race_embed("The race is about to begin!"))
+        await asyncio.sleep(3)
+    except discord.Forbidden:
+        print(f"Error: Cannot send message in channel {channel_id} (Guild {guild_id}). Disabling for guild.")
+        await remove_race_channel(guild_id)
+        return
+    except Exception as e:
+        print(f"Error sending race start message: {e}")
+        return
+
+    winner = None
+    while winner is None:
+        await asyncio.sleep(2.0)
+        
+        for color in HORSE_COLORS:
+            move = random.choice([1, 1, 2, 2, 3])
+            horse_positions[color] += move
+            
+            if horse_positions[color] >= RACE_TRACK_LENGTH:
+                winner = color
+                break
+        
+        await msg.edit(embed=get_race_embed("The race is in progress!"))
+
+    final_embed = get_race_embed(f"🎉 The race is over! Winner: {HORSE_DEFINITIONS[winner]} {winner} Horse! 🎉")
+    final_embed.color = discord.Color.green()
+    final_embed.set_footer(text="Processing bets...")
+    await msg.edit(embed=final_embed)
+    await asyncio.sleep(2)
+
+    bets = await get_bets_for_guild(guild_id)
+    
+    if not bets:
+        await channel.send("No bets were placed for this race.")
+        return
+
+    results_description = f"**Winner:** {HORSE_DEFINITIONS[winner]} **{winner} Horse**\n\n**Results:**\n"
+    
+    user_ids_to_fetch = {bet['user_id'] for bet in bets}
+    
+    user_map = {}
+    for user_id in user_ids_to_fetch:
+        try:
+            user = await client.fetch_user(user_id)
+            user_map[user_id] = user.display_name
+        except:
+            user_map[user_id] = "<Unknown User>"
+
+    for bet in bets:
+        user_id = bet['user_id']
+        bet_amount = bet['bet_amount']
+        horse_color = bet['horse_color']
+        username = user_map[user_id]
+        
+        if horse_color == winner:
+            winnings = bet_amount * RACE_PAYOUT_MULTIPLIER
+            await update_balance(user_id, winnings)
+            results_description += f"✅ **{username}** won **{winnings} {CURRENCY_NAME}**!\n"
+        else:
+            await update_balance(user_id, -bet_amount)
+            results_description += f"❌ **{username}** lost **{bet_amount} {CURRENCY_NAME}**.\n"
+            
+    results_embed = discord.Embed(title="Race Payouts", description=results_description, color=discord.Color.gold())
+    await channel.send(embed=results_embed)
+    
+    await clear_bets_for_guild(guild_id)
+
 class aclient(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
@@ -187,6 +380,7 @@ class aclient(discord.Client):
                     if not member.bot:
                         active_sessions[member.id] = now
                         print(f"Found {member.name} in {vc.name}. Starting timer.")
+        start_race_loop.start()
 
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         """Tracks joins/leaves, updating time and awarding currency."""
@@ -578,6 +772,88 @@ async def roulette(interaction: discord.Interaction, amount: app_commands.Range[
         
     await msg.edit(embed=embed)
 
+@tree.command(name="setup-horserace", description="[Admin] Enables and sets the channel for horse racing.")
+@app_commands.describe(channel="The channel where races will be posted.")
+@app_commands.checks.has_permissions(administrator=True)
+async def setup_horserace(interaction: discord.Interaction, channel: discord.TextChannel):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        temp_msg = await channel.send("Checking permissions...")
+        await temp_msg.delete()
+        
+        await set_race_channel(interaction.guild_id, channel.id)
+        await interaction.followup.send(
+            f"Horse racing is now **ENABLED**.\n"
+            f"Races will be posted in {channel.mention} every 30 minutes (at :00 and :30)."
+        )
+    except discord.Forbidden:
+        await interaction.followup.send("Error: I don't have permission to send messages in that channel.")
+    except Exception as e:
+        await interaction.followup.send(f"An error occurred: {e}")
+
+@tree.command(name="disable-horserace", description="[Admin] Disables horse racing for this server.")
+@app_commands.checks.has_permissions(administrator=True)
+async def disable_horserace(interaction: discord.Interaction):
+    await remove_race_channel(interaction.guild_id)
+    await interaction.response.send_message(
+        "Horse racing is now **DISABLED**. I will no longer post races.", 
+        ephemeral=True
+    )
+
+@tree.command(name="bet-horse", description="Place a bet on the next horse race.")
+@app_commands.describe(
+    amount="The amount of currency you want to bet",
+    color="The color of the horse you're betting on"
+)
+@app_commands.choices(color=[
+    app_commands.Choice(name="🟥 Red", value="Red"),
+    app_commands.Choice(name="🟦 Blue", value="Blue"),
+    app_commands.Choice(name="🟩 Green", value="Green"),
+    app_commands.Choice(name="🟨 Yellow", value="Yellow"),
+    app_commands.Choice(name="🟪 Purple", value="Purple")
+])
+
+async def bet_horse(interaction: discord.Interaction, amount: app_commands.Range[int, 1], color: str):
+    await interaction.response.defer(ephemeral=True)
+    user_id = interaction.user.id
+    guild_id = interaction.guild_id
+
+    config = await get_guild_race_config(guild_id)
+    if not config:
+        await interaction.followup.send("Horse racing is not set up in this server. An admin must use `/setup-horserace`.")
+        return
+
+    now = datetime.datetime.now()
+    if now.minute in RACE_LOCKOUT_MINUTES:
+        next_race_time = ":00" if now.minute >= 30 else ":30"
+        await interaction.followup.send(f"Sorry, bets are **LOCKED** for the race at {now.hour}{next_race_time}. Please bet on the *next* one.")
+        return
+
+    saved_balance = await get_balance(user_id)
+    pending_currency = 0
+    if user_id in active_sessions:
+        join_time = active_sessions[user_id]
+        current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
+        pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
+    
+    current_balance = saved_balance + pending_currency
+    
+    if amount > current_balance:
+        await interaction.followup.send(
+            f"You don't have enough {CURRENCY_NAME} to make that bet.\n"
+            f"Your current balance is: **{current_balance} {CURRENCY_NAME}**"
+        )
+        return
+
+    await place_bet(user_id, guild_id, amount, color)
+    
+    next_race_minute = "00" if now.minute >= 30 else "30"
+    next_race_hour = now.hour + 1 if now.minute >= 30 else now.hour
+    await interaction.followup.send(
+        f"Your bet has been updated!\n"
+        f"You have **{amount} {CURRENCY_NAME}** on the **{HORSE_DEFINITIONS[color]} {color} Horse** for the race at {next_race_hour}:{next_race_minute}."
+    )
+
 @tree.command(name="coinflip", description="Gamble your currency on a 50/50 coin flip.")
 @app_commands.describe(amount="The amount of currency you want to bet")
 async def coinflip(interaction: discord.Interaction, amount: int):
@@ -699,24 +975,22 @@ class BlackjackView(discord.ui.View):
         await self.disable_buttons()
         
         status_message = ""
-        final_game_color = discord.Color.gold() # Default to yellow for a push
+        final_game_color = discord.Color.gold()
         
         if result == "win":
             await update_balance(self.player.id, self.bet_amount)
-            # Use the balance we stored in __init__
             new_balance = self.current_balance + self.bet_amount 
             status_message = f"You won {self.bet_amount} {CURRENCY_NAME}!\nNew Balance: **{new_balance}**"
             final_game_color = discord.Color.green()
             
         elif result == "lose":
             await update_balance(self.player.id, -self.bet_amount)
-            # Use the balance we stored in __init__
             new_balance = self.current_balance - self.bet_amount 
             status_message = f"You lost {self.bet_amount} {CURRENCY_NAME}!\nNew Balance: **{new_balance}**"
             final_game_color = discord.Color.red()
             
         elif result == "push":
-            new_balance = self.current_balance # Balance is unchanged
+            new_balance = self.current_balance
             status_message = f"It's a push! Bet returned.\nBalance: **{new_balance}**"
             
         final_embed = self.create_game_embed(message, status_message, reveal_dealer=True, final_color=final_game_color)
@@ -728,7 +1002,7 @@ class BlackjackView(discord.ui.View):
         except Exception as e:
             print(f"Error editing message: {e}")
 
-        self.stop() # Stop the view from listening
+        self.stop()
         
     async def on_timeout(self):
         if not self.game_over:
