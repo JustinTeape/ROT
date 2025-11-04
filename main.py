@@ -465,16 +465,19 @@ async def balance(interaction: discord.Interaction, user: discord.Member = None)
 
     user_balance_saved = await get_balance(user.id)
     pending_currency = 0
-
+    
+    # --- FIX: Timezone-aware math ---
     now = datetime.datetime.now(datetime.timezone.utc)
     if user.id in active_sessions:
         join_time = active_sessions[user.id]
+        
         if join_time.tzinfo is None:
              join_time = join_time.replace(tzinfo=datetime.timezone.utc)
              
         current_session_seconds = (now - join_time).total_seconds()
         if current_session_seconds > 0:
             pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
+    # --- END OF FIX ---
 
     total_balance = user_balance_saved + pending_currency
     await interaction.followup.send(f"**{user.display_name}** has **{total_balance} {CURRENCY_NAME}**.")
@@ -921,23 +924,32 @@ async def bet_horse(interaction: discord.Interaction, amount: app_commands.Range
 @tree.command(name="coinflip", description="Gamble your currency on a 50/50 coin flip.")
 @app_commands.describe(amount="The amount of currency you want to bet")
 async def coinflip(interaction: discord.Interaction, amount: int):
+    
+    # --- FIX 1: DEFER IMMEDIATELY ---
+    await interaction.response.defer()
+    
     user_id = interaction.user.id
     
     if amount <= 0:
-        await interaction.response.send_message("You must bet a positive amount.", ephemeral=True)
+        await interaction.followup.send("You must bet a positive amount.", ephemeral=True)
         return
         
+    # --- FIX 2: Timezone-aware math ---
+    now = datetime.datetime.now(datetime.timezone.utc)
     saved_balance = await get_balance(user_id)
     pending_currency = 0
     if user_id in active_sessions:
         join_time = active_sessions[user_id]
-        current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
-        pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
-        
+        if join_time.tzinfo is None:
+             join_time = join_time.replace(tzinfo=datetime.timezone.utc)
+        current_session_seconds = (now - join_time).total_seconds()
+        if current_session_seconds > 0:
+            pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
+            
     current_balance = saved_balance + pending_currency
     
     if amount > current_balance:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"You don't have enough {CURRENCY_NAME} to make that bet.\n"
             f"Your current balance is: **{current_balance} {CURRENCY_NAME}**", 
             ephemeral=True
@@ -946,9 +958,6 @@ async def coinflip(interaction: discord.Interaction, amount: int):
         
     await update_balance(user_id, -amount)
     current_balance -= amount
-
-    if not interaction.response.is_done():
-        await interaction.response.defer()
     
     is_win = random.choice([True, False]) 
     
@@ -956,16 +965,15 @@ async def coinflip(interaction: discord.Interaction, amount: int):
         payout = amount * 2
         await update_balance(user_id, payout) 
         new_balance = current_balance + payout
-        
         await interaction.followup.send(
-            f"**It's Heads! You won!**\n\n"
+            f"🪙 **It's Heads! You won!** 🪙\n\n"
             f"You won **{amount} {CURRENCY_NAME}** (Total Payout: {payout}).\n"
             f"Your new balance is **{new_balance} {CURRENCY_NAME}**."
         )
     else:
         new_balance = current_balance
         await interaction.followup.send(
-            f"**It's Tails! You lost!**\n\n"
+            f"💀 **It's Tails! You lost!** 💀\n\n"
             f"You lost **{amount} {CURRENCY_NAME}**.\n"
             f"Your new balance is **{new_balance} {CURRENCY_NAME}**."
         )
