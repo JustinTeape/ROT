@@ -246,9 +246,18 @@ def format_dealer_hand_hidden(hand):
 
 @tasks.loop(minutes=1.0)
 async def start_race_loop():
-    """Checks every minute if it's time to start a race."""
-    now = datetime.datetime.now(datetime.timezone.utc)
+    """Checks every minute if it's time to start a race AND keeps DB alive."""
+    
+    if db_pool:
+        try:
+            async with db_pool.acquire() as conn:
+                await conn.fetchval("SELECT 1")
+            print("Database keep-alive ping successful.")
+        except Exception as e:
+            print(f"Database keep-alive ping failed: {e}")
 
+    now = datetime.datetime.now(datetime.timezone.utc)
+    
     if now.minute == 0 or now.minute == 30:
         print(f"Race time! ({now.hour}:{now.minute:02d}) Running global races.")
         await run_global_races()
@@ -756,7 +765,7 @@ async def roulette(interaction: discord.Interaction, amount: app_commands.Range[
         
         embed.color = discord.Color.green()
         embed.add_field(
-            name="🎉 You Won! 🎉",
+            name="Your results",
             value=f"You won **{winnings} {CURRENCY_NAME}**.\nYour new balance is **{new_balance} {CURRENCY_NAME}**.",
             inline=False
         )
@@ -766,7 +775,7 @@ async def roulette(interaction: discord.Interaction, amount: app_commands.Range[
         
         embed.color = discord.Color.red()
         embed.add_field(
-            name="💀 You Lost 💀",
+            name="Your results!",
             value=f"You lost **{amount} {CURRENCY_NAME}**.\nYour new balance is **{new_balance} {CURRENCY_NAME}**.",
             inline=False
         )
@@ -898,7 +907,7 @@ async def coinflip(interaction: discord.Interaction, amount: int):
         await update_balance(user_id, amount) 
         new_balance = current_balance + amount
         await interaction.followup.send(
-            f"🪙 **It's Heads! You won!** 🪙\n\n"
+            f"**It's Heads! You won!**\n\n"
             f"You won **{amount} {CURRENCY_NAME}**.\n"
             f"Your new balance is **{new_balance} {CURRENCY_NAME}**."
         )
@@ -906,7 +915,7 @@ async def coinflip(interaction: discord.Interaction, amount: int):
         await update_balance(user_id, -amount)
         new_balance = current_balance - amount
         await interaction.followup.send(
-            f"💀 **It's Tails! You lost!** 💀\n\n"
+            f"**It's Tails! You lost!**\n\n"
             f"You lost **{amount} {CURRENCY_NAME}**.\n"
             f"Your new balance is **{new_balance} {CURRENCY_NAME}**."
         )
