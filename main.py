@@ -253,7 +253,7 @@ def format_dealer_hand_hidden(hand):
 @tasks.loop(minutes=1.0)
 async def start_race_loop():
     """Checks every minute if it's time to start a race."""
-    now = datetime.datetime.now()
+    now = datetime.datetime.now(datetime.timezone.utc)
 
     if now.minute == 0 or now.minute == 30:
         print(f"Race time! ({now.hour}:{now.minute:02d}) Running global races.")
@@ -380,7 +380,7 @@ class aclient(discord.Client):
         print(f"We have logged in as {self.user}.")
 
         print("Checking for users in VC on startup...")
-        now = datetime.datetime.now()
+        now = datetime.datetime.now(datetime.timezone.utc)
         for guild in self.guilds:
             for vc in guild.voice_channels:
                 for member in vc.members:
@@ -394,11 +394,13 @@ class aclient(discord.Client):
         if member.bot:
             return
 
-        now = datetime.datetime.now()
+        now = datetime.datetime.now(datetime.timezone.utc)
 
         if before.channel is not None and before.channel != after.channel:
             if member.id in active_sessions:
                 join_time = active_sessions.pop(member.id)
+                if join_time.tzinfo is None:
+                    join_time = join_time.replace(tzinfo=datetime.timezone.utc)
                 duration_seconds = int((now - join_time).total_seconds())
                 
                 currency_earned = int(duration_seconds / SECONDS_PER_CURRENCY)
@@ -433,6 +435,8 @@ async def voicetime(interaction: discord.Interaction, user: discord.Member = Non
     total_seconds_current_session = 0
     if user.id in active_sessions:
         join_time = active_sessions[user.id]
+        if join_time.tzinfo is None:
+            join_time = join_time.replace(tzinfo=datetime.timezone.utc)
         total_seconds_current_session = (datetime.datetime.now() - join_time).total_seconds()
 
     total_time = total_seconds_saved + int(total_seconds_current_session)
@@ -459,6 +463,8 @@ async def balance(interaction: discord.Interaction, user: discord.Member = None)
     pending_currency = 0
     if user.id in active_sessions:
         join_time = active_sessions[user.id]
+        if join_time.tzinfo is None:
+            join_time = join_time.replace(tzinfo=datetime.timezone.utc)
         current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
         pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
 
@@ -480,7 +486,7 @@ async def leaderboard_time(interaction: discord.Interaction):
     
     leaderboard_data = await get_all_time_data()
     
-    now = datetime.datetime.now()
+    now = datetime.datetime.now(datetime.timezone.utc)
     for user_id, join_time in active_sessions.items():
         current_session_seconds = (now - join_time).total_seconds()
         
@@ -532,7 +538,7 @@ async def leaderboard_currency(interaction: discord.Interaction):
 
     leaderboard_data = await get_all_currency_data()
     
-    now = datetime.datetime.now()
+    now = datetime.datetime.now(datetime.timezone.utc)
     for user_id, join_time in active_sessions.items():
         current_session_seconds = (now - join_time).total_seconds()
         pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
