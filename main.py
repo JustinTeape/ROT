@@ -575,20 +575,18 @@ async def leaderboard_currency(interaction: discord.Interaction):
 async def blackjack(interaction: discord.Interaction, amount: int):
     
     user_id = interaction.user.id
-
+    
     if amount <= 0:
         await interaction.response.send_message("You must bet a positive amount.", ephemeral=True)
         return
-
+        
     saved_balance = await get_balance(user_id)
-
     pending_currency = 0
     if user_id in active_sessions:
         join_time = active_sessions[user_id]
         current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
-        pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
+        pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
         
-
     current_balance = saved_balance + pending_currency
     
     if amount > current_balance:
@@ -598,10 +596,14 @@ async def blackjack(interaction: discord.Interaction, amount: int):
             ephemeral=True
         )
         return
-
-    await interaction.response.defer()
-    
-    game_view = BlackjackView(interaction, amount, current_balance)
+        
+    await update_balance(user_id, -amount)
+    current_balance -= amount
+   
+    if not interaction.response.is_done():
+        await interaction.response.defer()
+        
+    game_view = BlackjackView(interaction, amount, current_balance) 
     await game_view.start_game()
 
 @tree.command(name="pay", description="Give currency to another user.")
@@ -874,20 +876,18 @@ async def bet_horse(interaction: discord.Interaction, amount: app_commands.Range
 @tree.command(name="coinflip", description="Gamble your currency on a 50/50 coin flip.")
 @app_commands.describe(amount="The amount of currency you want to bet")
 async def coinflip(interaction: discord.Interaction, amount: int):
-    
     user_id = interaction.user.id
-
+    
     if amount <= 0:
         await interaction.response.send_message("You must bet a positive amount.", ephemeral=True)
         return
-
+        
     saved_balance = await get_balance(user_id)
-
     pending_currency = 0
     if user_id in active_sessions:
         join_time = active_sessions[user_id]
         current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
-        pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
+        pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
         
     current_balance = saved_balance + pending_currency
     
@@ -898,27 +898,29 @@ async def coinflip(interaction: discord.Interaction, amount: int):
             ephemeral=True
         )
         return
+        
+    await update_balance(user_id, -amount)
+    current_balance -= amount
 
-    await interaction.response.defer()
+    if not interaction.response.is_done():
+        await interaction.response.defer()
     
     is_win = random.choice([True, False]) 
     
     if is_win:
-        await update_balance(user_id, amount) 
-        new_balance = current_balance + amount
+        payout = amount * 2
+        await update_balance(user_id, payout) 
+        new_balance = current_balance + payout
         
         await interaction.followup.send(
-            f"**You won!**\n\n"
-            f"You won **{amount} {CURRENCY_NAME}**.\n"
+            f"**It's Heads! You won!**\n\n"
+            f"You won **{amount} {CURRENCY_NAME}** (Total Payout: {payout}).\n"
             f"Your new balance is **{new_balance} {CURRENCY_NAME}**."
         )
-    
     else:
-        await update_balance(user_id, -amount)
-        new_balance = current_balance - amount
-        
+        new_balance = current_balance
         await interaction.followup.send(
-            f"**You lost!**\n\n"
+            f"**It's Tails! You lost!**\n\n"
             f"You lost **{amount} {CURRENCY_NAME}**.\n"
             f"Your new balance is **{new_balance} {CURRENCY_NAME}**."
         )
@@ -992,24 +994,26 @@ class BlackjackView(discord.ui.View):
         await self.disable_buttons()
         
         status_message = ""
-        final_game_color = discord.Color.gold()
+        final_game_color = discord.Color.gold() 
         
         if result == "win":
-            await update_balance(self.player.id, self.bet_amount)
-            new_balance = self.current_balance + self.bet_amount 
+            payout = self.bet_amount * 2
+            await update_balance(self.player.id, payout)
+            new_balance = self.current_balance + payout 
+            
             status_message = f"You won {self.bet_amount} {CURRENCY_NAME}!\nNew Balance: **{new_balance}**"
             final_game_color = discord.Color.green()
             
         elif result == "lose":
-            await update_balance(self.player.id, -self.bet_amount)
-            new_balance = self.current_balance - self.bet_amount 
+            new_balance = self.current_balance
             status_message = f"You lost {self.bet_amount} {CURRENCY_NAME}!\nNew Balance: **{new_balance}**"
             final_game_color = discord.Color.red()
             
         elif result == "push":
-            new_balance = self.current_balance
+            await update_balance(self.player.id, self.bet_amount)
+            new_balance = self.current_balance + self.bet_amount
             status_message = f"It's a push! Bet returned.\nBalance: **{new_balance}**"
-            
+        
         final_embed = self.create_game_embed(message, status_message, reveal_dealer=True, final_color=final_game_color)
         
         try:
