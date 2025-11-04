@@ -1062,6 +1062,8 @@ class BlackjackView(discord.ui.View):
             await interaction.response.send_message("This is not your game!", ephemeral=True)
             return
 
+        await interaction.response.defer()
+        
         self.player_hand.append(self.deck.pop())
         player_score = calculate_hand_value(self.player_hand)
         
