@@ -581,23 +581,31 @@ async def leaderboard_currency(interaction: discord.Interaction):
 @app_commands.describe(amount="The amount of currency you want to bet")
 async def blackjack(interaction: discord.Interaction, amount: int):
     
+    # --- FIX 1: DEFER IMMEDIATELY ---
+    await interaction.response.defer()
+    
     user_id = interaction.user.id
     
     if amount <= 0:
-        await interaction.response.send_message("You must bet a positive amount.", ephemeral=True)
+        await interaction.followup.send("You must bet a positive amount.", ephemeral=True)
         return
         
+    # --- FIX 2: Timezone-aware math ---
+    now = datetime.datetime.now(datetime.timezone.utc)
     saved_balance = await get_balance(user_id)
     pending_currency = 0
     if user_id in active_sessions:
         join_time = active_sessions[user_id]
-        current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
-        pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
-        
+        if join_time.tzinfo is None:
+             join_time = join_time.replace(tzinfo=datetime.timezone.utc)
+        current_session_seconds = (now - join_time).total_seconds()
+        if current_session_seconds > 0:
+            pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
+            
     current_balance = saved_balance + pending_currency
     
     if amount > current_balance:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"You don't have enough {CURRENCY_NAME} to make that bet.\n"
             f"Your current balance is: **{current_balance} {CURRENCY_NAME}**", 
             ephemeral=True
@@ -606,9 +614,6 @@ async def blackjack(interaction: discord.Interaction, amount: int):
         
     await update_balance(user_id, -amount)
     current_balance -= amount
-   
-    if not interaction.response.is_done():
-        await interaction.response.defer()
         
     game_view = BlackjackView(interaction, amount, current_balance) 
     await game_view.start_game()
