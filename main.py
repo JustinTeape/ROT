@@ -400,8 +400,11 @@ class aclient(discord.Client):
             if member.id in active_sessions:
                 join_time = active_sessions.pop(member.id)
                 duration_seconds = int((now - join_time).total_seconds())
+
+                if duration_seconds <= 0:
+                    return
                 
-                currency_earned = int(duration_seconds / SECONDS_PER_CURRENCY)
+                currency_earned = int(duration_seconds / SECS_PER_CURRENCY)
                 
                 if duration_seconds > 0:
                     await record_vc_session(member.id, duration_seconds, currency_earned)
@@ -685,15 +688,27 @@ async def roulette(interaction: discord.Interaction, amount: app_commands.Range[
     user_id = interaction.user.id
   
     await interaction.response.defer()
-
-    saved_balance = await get_balance(user_id)
+    saved_balance = await get_balance(user_id) # (or donator_id)
     pending_currency = 0
-    if user_id in active_sessions:
-        join_time = active_sessions[user_id]
+    if user_id in active_sessions: # (or donator_id)
+        join_time = active_sessions[user_id] # (or donator_id)
         current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
-        pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
         
-    current_balance = saved_balance + pending_currency
+        # --- START OF BAND-AID ---
+        # 1. Prevent negative time from causing negative currency
+        if current_session_seconds < 0:
+            current_session_seconds = 0
+        # --- END OF BAND-AID ---
+            
+        pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
+
+    current_balance = saved_balance + pending_currency # (or total_balance, donator_balance)
+
+    # --- START OF USER'S BAND-AID (ISSUE 2) ---
+    # 2. If balance is 0 or less while in VC, set it to 1
+    if current_balance <= 0 and user_id in active_sessions:
+        current_balance = 1
+    # --- END OF USER'S BAND-AID ---
     
     if amount > current_balance:
         await interaction.followup.send(
@@ -855,16 +870,27 @@ async def bet_horse(interaction: discord.Interaction, amount: app_commands.Range
         )
         return
 
-    saved_balance = await get_balance(user_id)
-    pending_currency = 0
-    if user_id in active_sessions:
-        join_time = active_sessions[user_id]
-        if join_time.tzinfo is None:
-             join_time = join_time.replace(tzinfo=datetime.timezone.utc)
-        current_session_seconds = (now - join_time).total_seconds()
+        saved_balance = await get_balance(user_id) # (or donator_id)
+        pending_currency = 0
+        if user_id in active_sessions: # (or donator_id)
+            join_time = active_sessions[user_id] # (or donator_id)
+            current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
+        
+        # --- START OF BAND-AID ---
+        # 1. Prevent negative time from causing negative currency
+            if current_session_seconds < 0:
+                current_session_seconds = 0
+        # --- END OF BAND-AID ---
+            
         pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
-    
-    current_balance = saved_balance + pending_currency
+
+    current_balance = saved_balance + pending_currency # (or total_balance, donator_balance)
+
+    # --- START OF USER'S BAND-AID (ISSUE 2) ---
+    # 2. If balance is 0 or less while in VC, set it to 1
+    if current_balance <= 0 and user_id in active_sessions:
+        current_balance = 1
+    # --- END OF USER'S BAND-AID ---
     
     old_bet = await get_user_bet_for_guild(user_id, guild_id)
     old_bet_amount = old_bet['bet_amount'] if old_bet else 0
@@ -907,15 +933,28 @@ async def coinflip(interaction: discord.Interaction, amount: int):
     if amount <= 0:
         await interaction.response.send_message("You must bet a positive amount.", ephemeral=True)
         return
-        
-    saved_balance = await get_balance(user_id)
+
+    saved_balance = await get_balance(user_id) # (or donator_id)
     pending_currency = 0
-    if user_id in active_sessions:
-        join_time = active_sessions[user_id]
+    if user_id in active_sessions: # (or donator_id)
+        join_time = active_sessions[user_id] # (or donator_id)
         current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
-        pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
         
-    current_balance = saved_balance + pending_currency
+        # --- START OF BAND-AID ---
+        # 1. Prevent negative time from causing negative currency
+        if current_session_seconds < 0:
+            current_session_seconds = 0
+        # --- END OF BAND-AID ---
+            
+        pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
+
+    current_balance = saved_balance + pending_currency # (or total_balance, donator_balance)
+
+    # --- START OF USER'S BAND-AID (ISSUE 2) ---
+    # 2. If balance is 0 or less while in VC, set it to 1
+    if current_balance <= 0 and user_id in active_sessions:
+        current_balance = 1
+    # --- END OF USER'S BAND-AID ---
     
     if amount > current_balance:
         await interaction.response.send_message(
@@ -1070,11 +1109,10 @@ class BlackjackView(discord.ui.View):
         if player_score > 21:
             await self.end_game("lose", "Bust! You lost.")
         elif player_score == 21:
-            await interaction.response.defer()
             await self.dealer_turn()
         else:
             embed = self.create_game_embed("Hit or Stand?", "")
-            await interaction.response.edit_message(embed=embed, view=self)
+            await self.interaction.edit_original_response(embed=embed, view=self)
 
     @ui.button(label="Stand", style=discord.ButtonStyle.red)
     async def stand(self, interaction: discord.Interaction, button: ui.Button):
