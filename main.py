@@ -865,7 +865,7 @@ async def bet_horse(interaction: discord.Interaction, amount: app_commands.Range
         await interaction.followup.send("Horse racing is not set up in this server. An admin must use `/setup-horserace`.")
         return
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now()
     if now.minute in RACE_LOCKOUT_MINUTES:
         relative_time_str = get_next_race_timestamp(now)
         await interaction.followup.send(
