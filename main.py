@@ -874,18 +874,18 @@ async def bet_horse(interaction: discord.Interaction, amount: app_commands.Range
         )
         return
 
-        saved_balance = await get_balance(user_id) # (or donator_id)
-        pending_currency = 0
-        if user_id in active_sessions: # (or donator_id)
-            join_time = active_sessions[user_id] # (or donator_id)
-            current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
+    saved_balance = await get_balance(user_id) # (or donator_id)
+    pending_currency = 0
+    if user_id in active_sessions: # (or donator_id)
+        join_time = active_sessions[user_id] # (or donator_id)
+        current_session_seconds = (datetime.datetime.now() - join_time).total_seconds()
+    
+    # --- START OF BAND-AID ---
+    # 1. Prevent negative time from causing negative currency
+        if current_session_seconds < 0:
+            current_session_seconds = 0
+    # --- END OF BAND-AID ---
         
-        # --- START OF BAND-AID ---
-        # 1. Prevent negative time from causing negative currency
-            if current_session_seconds < 0:
-                current_session_seconds = 0
-        # --- END OF BAND-AID ---
-            
         pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
 
     current_balance = saved_balance + pending_currency # (or total_balance, donator_balance)
