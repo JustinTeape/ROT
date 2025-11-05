@@ -394,30 +394,26 @@ class aclient(discord.Client):
         if member.bot:
             return
 
-        # --- FIX 1: Use timezone-aware 'now' ---
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.datetime.now()
 
         if before.channel is not None and before.channel != after.channel:
             if member.id in active_sessions:
                 join_time = active_sessions.pop(member.id)
-                
-                # --- FIX 2: Make join_time timezone-aware ---
-                if join_time.tzinfo is None:
-                     join_time = join_time.replace(tzinfo=datetime.timezone.utc)
-                     
                 duration_seconds = int((now - join_time).total_seconds())
                 
+                # --- THIS IS THE FIX ---
                 # Don't award negative time.
                 if duration_seconds <= 0:
                     return
+                # --- END OF FIX ---
                 
                 currency_earned = int(duration_seconds / SECS_PER_CURRENCY)
                 
-                await record_vc_session(member.id, duration_seconds, currency_earned)
-                print(f"User {member.name} left. Added {duration_seconds}s and {currency_earned} {CURRENCY_NAME}.")
+                if duration_seconds > 0:
+                    await record_vc_session(member.id, duration_seconds, currency_earned)
+                    print(f"User {member.name} left. Added {duration_seconds}s and {currency_earned} {CURRENCY_NAME}.")
 
         if after.channel is not None and after.channel != before.channel:
-            # --- FIX 3: Save timezone-aware 'now' when joining ---
             active_sessions[member.id] = now
             print(f"User {member.name} joined. Starting timer.")
 
