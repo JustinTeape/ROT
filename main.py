@@ -404,10 +404,11 @@ class aclient(discord.Client):
                 # --- THIS IS THE FIX ---
                 # Don't award negative time.
                 if duration_seconds <= 0:
+                    duration_seconds = abs(duration_seconds)
                     return
                 # --- END OF FIX ---
                 
-                currency_earned = int(duration_seconds / SECS_PER_CURRENCY)
+                currency_earned = int(duration_seconds / SECONDS_PER_CURRENCY)
                 
                 if duration_seconds > 0:
                     await record_vc_session(member.id, duration_seconds, currency_earned)
@@ -703,7 +704,7 @@ async def roulette(interaction: discord.Interaction, amount: app_commands.Range[
             current_session_seconds = 0
         # --- END OF BAND-AID ---
             
-        pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
+        pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
 
     current_balance = saved_balance + pending_currency # (or total_balance, donator_balance)
 
@@ -885,7 +886,7 @@ async def bet_horse(interaction: discord.Interaction, amount: app_commands.Range
                 current_session_seconds = 0
         # --- END OF BAND-AID ---
             
-        pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
+        pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
 
     current_balance = saved_balance + pending_currency # (or total_balance, donator_balance)
 
@@ -949,7 +950,7 @@ async def coinflip(interaction: discord.Interaction, amount: int):
             current_session_seconds = 0
         # --- END OF BAND-AID ---
             
-        pending_currency = int(current_session_seconds / SECS_PER_CURRENCY)
+        pending_currency = int(current_session_seconds / SECONDS_PER_CURRENCY)
 
     current_balance = saved_balance + pending_currency # (or total_balance, donator_balance)
 
