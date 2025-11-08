@@ -974,7 +974,7 @@ async def coinflip(interaction: discord.Interaction, amount: int):
     if not interaction.response.is_done():
         await interaction.response.defer()
     
-    is_win = random.choice([True, True]) 
+    is_win = random.choice([True, False]) 
     
     if is_win:
         payout = amount * 2
